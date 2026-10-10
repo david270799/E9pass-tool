@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from e9pass_ocr.ocr_engine import MODEL_FILES, models_dir  # noqa: E402
+from e9pass.ocr.ocr_engine import MODEL_FILES, models_dir  # noqa: E402
 
 
 def main():

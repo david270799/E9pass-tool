@@ -1,4 +1,4 @@
-from e9pass_ocr.parser import find_country, find_reg_no, info_from_reg_no, parse_card
+from e9pass.ocr.front import find_country, find_reg_no, info_from_reg_no, parse_card
 
 CLEAN = [
     "외국인등록증 RESIDENCE CARD",
@@ -79,3 +79,8 @@ def test_country_korean_and_indonesia_vs_india():
 def test_visa_with_subtype():
     d = parse_card(["체류자격 Status 방문취업(H-2)", "F-4-1"])
     assert d.visa == "H-2"
+
+
+def test_name_label_ocr_typo_is_not_a_name():
+    d = parse_card(["성명 Namne", "BATBAYAR GANBOLD", "MONGOLIA", "910722-5345678"])
+    assert d.name == "BATBAYAR GANBOLD"

@@ -6,14 +6,15 @@
 """
 
 import os
-import sys
+import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageOps
 
-from .parser import CardData, parse_card
+from .. import config
+from .front import CardData, parse_card
 
 try:  # фото с iPhone (.heic)
     from pillow_heif import register_heif_opener
@@ -25,14 +26,8 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", "
 MODEL_FILES = ("craft_mlt_25k.pth", "korean_g2.pth")
 
 
-def app_dir() -> Path:
-    if getattr(sys, "frozen", False):  # собрано PyInstaller
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parent.parent
-
-
 def models_dir() -> Path:
-    return Path(os.environ.get("E9PASS_MODELS_DIR", app_dir() / "models"))
+    return Path(os.environ.get("E9PASS_MODELS_DIR", config.app_dir() / "models"))
 
 
 def load_image(path) -> Image.Image:
@@ -41,7 +36,7 @@ def load_image(path) -> Image.Image:
     return img.convert("RGB")
 
 
-def _resize(img: Image.Image, target: int = 1800) -> Image.Image:
+def resize_max(img: Image.Image, target: int = 1800) -> Image.Image:
     w, h = img.size
     scale = target / max(w, h)
     if 0.9 < scale < 1.1:
@@ -49,15 +44,10 @@ def _resize(img: Image.Image, target: int = 1800) -> Image.Image:
     return img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
 
 
-def crop_card(img: Image.Image) -> Image.Image:
-    """Ищет карту на фото (самый большой четырехугольник) и выравнивает перспективу.
+def find_card_corners(img: Image.Image) -> Optional[np.ndarray]:
+    """Углы карты на фото (tl, tr, br, bl) в пикселях исходного изображения или None."""
+    import cv2
 
-    Если карту найти не удалось, возвращает изображение без изменений.
-    """
-    try:
-        import cv2
-    except ImportError:
-        return img
     arr = np.array(img)
     h, w = arr.shape[:2]
     scale = 800 / max(h, w)
@@ -68,35 +58,43 @@ def crop_card(img: Image.Image) -> Image.Image:
     area_total = small.shape[0] * small.shape[1]
     for c in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
         area = cv2.contourArea(c)
-        if area < 0.2 * area_total or area > 0.98 * area_total:
+        if area < 0.15 * area_total or area > 0.98 * area_total:
             continue
         approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
         if len(approx) != 4:
             continue
-        pts = approx.reshape(4, 2).astype("float32") / scale
-        s, d = pts.sum(axis=1), np.diff(pts, axis=1).ravel()
-        tl, br = pts[np.argmin(s)], pts[np.argmax(s)]
-        tr, bl = pts[np.argmin(d)], pts[np.argmax(d)]
-        width = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
-        height = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
-        ratio = max(width, height) / max(1, min(width, height))
-        if not 1.3 < ratio < 1.9:  # у ID-карты соотношение сторон ~1.58
-            continue
-        dst = np.array([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], "float32")
-        m = cv2.getPerspectiveTransform(np.array([tl, tr, br, bl]), dst)
-        return Image.fromarray(cv2.warpPerspective(arr, m, (width, height)))
-    return img
+        pts = order_corners(approx.reshape(4, 2).astype("float32") / scale)
+        tl, tr, br, bl = pts
+        width = max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))
+        height = max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl))
+        ratio = max(width, height) / max(1.0, min(width, height))
+        if 1.3 < ratio < 1.9:  # у ID-карты соотношение сторон ~1.58
+            return pts
+    return None
+
+
+def order_corners(pts: np.ndarray) -> np.ndarray:
+    s, d = pts.sum(axis=1), np.diff(pts, axis=1).ravel()
+    return np.array([pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]],
+                    dtype="float32")
+
+
+def crop_card(img: Image.Image) -> Image.Image:
+    from ..scan import warp_perspective
+
+    pts = find_card_corners(img)
+    return warp_perspective(img, pts) if pts is not None else img
 
 
 def group_lines(results) -> List[str]:
     """Собирает фрагменты EasyOCR в строки по вертикальному положению."""
     items = []
-    for box, text, conf in results:
+    for box, text, _conf in results:
         ys = [p[1] for p in box]
         xs = [p[0] for p in box]
         items.append((min(ys), max(ys), min(xs), text))
     items.sort(key=lambda t: (t[0] + t[1]) / 2)
-    lines: List[List[Tuple[float, float, float, str]]] = []
+    lines: List[list] = []
     for it in items:
         center = (it[0] + it[1]) / 2
         if lines:
@@ -110,32 +108,64 @@ def group_lines(results) -> List[str]:
     return [" ".join(i[3] for i in sorted(line, key=lambda t: t[2])) for line in lines]
 
 
-class CardReader:
+def _score(results) -> float:
+    return sum(conf * len(text) for _box, text, conf in results)
+
+
+class OcrEngine:
+    """Один экземпляр на программу; EasyOCR загружается при первом использовании."""
+
+    _instance = None
+    _lock = threading.Lock()
+
     def __init__(self, gpu: bool = False):
         import easyocr  # тяжёлый импорт — только при создании
 
         mdir = models_dir()
-        have_models = all((mdir / f).exists() for f in MODEL_FILES)
         kwargs = {"gpu": gpu, "verbose": False}
-        if have_models:
+        if all((mdir / f).exists() for f in MODEL_FILES):
             kwargs.update(model_storage_directory=str(mdir), download_enabled=False)
         self.reader = easyocr.Reader(["ko", "en"], **kwargs)
+        self._run_lock = threading.Lock()
 
-    def ocr_lines(self, img: Image.Image) -> List[str]:
-        results = self.reader.readtext(np.array(img), paragraph=False)
-        return group_lines(results)
+    @classmethod
+    def get(cls) -> "OcrEngine":
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            return cls._instance
 
-    def read(self, path) -> Tuple[CardData, List[str]]:
-        """Распознаёт файл и возвращает (поля карты, сырые строки текста)."""
-        img = _resize(crop_card(load_image(path)))
+    def readtext(self, img: Image.Image):
+        with self._run_lock:  # EasyOCR не любит параллельные вызовы
+            return self.reader.readtext(np.array(img), paragraph=False)
+
+    def lines(self, img: Image.Image) -> List[str]:
+        return group_lines(self.readtext(img))
+
+    def lines_best_rotation(self, img: Image.Image) -> List[str]:
+        """Текст документа; если распознано плохо — пробует повороты и берет лучший."""
+        img = resize_max(img)
+        best = self.readtext(img)
+        if _score(best) < 60:
+            for angle in (90, 270, 180):
+                res = self.readtext(img.rotate(angle, expand=True))
+                if _score(res) > _score(best) * 1.3:
+                    best = res
+        return group_lines(best)
+
+    def read_front(self, path) -> Tuple[CardData, List[str]]:
+        """Лицевая сторона ID: (поля карты, сырые строки)."""
+        img = resize_max(crop_card(load_image(path)))
         best: Optional[Tuple[CardData, List[str]]] = None
-        # Если с первого раза номер не найден — пробуем повернуть изображение.
         for angle in (0, 90, 270, 180):
             rotated = img.rotate(angle, expand=True) if angle else img
-            lines = self.ocr_lines(rotated)
+            lines = self.lines(rotated)
             data = parse_card(lines)
             if best is None or data.filled_count() > best[0].filled_count():
                 best = (data, lines)
             if data.reg_no and data.filled_count() >= 4:
                 break
         return best
+
+    def read_image_lines(self, path) -> List[str]:
+        return self.lines_best_rotation(load_image(path))

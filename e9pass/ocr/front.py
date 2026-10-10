@@ -254,7 +254,9 @@ def find_name(lines: List[str], country: str = "") -> str:
         m = re.search(r"(성\s*명|Name)\s*[:.]?\s*(.*)", line, re.I)
         if not m:
             continue
-        rest = _latin_words(re.sub(r"\bName\b", " ", m.group(2), flags=re.I))
+        # OCR часто искажает саму подпись «Name» (Namne, Narne) — убираем похожие слова.
+        rest = " ".join(w for w in _latin_words(m.group(2)).split()
+                        if SequenceMatcher(None, w, "NAME").ratio() < 0.6)
         if _is_name_like(rest) and rest != country:
             return rest
         for nxt in lines[i + 1:i + 3]:

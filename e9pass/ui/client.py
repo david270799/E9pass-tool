@@ -1,0 +1,339 @@
+"""Шаг 2: карточка клиента — профиль, документы, очередь Master-PDF."""
+
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGridLayout, QLabel, QLineEdit, QMessageBox,
+                               QScrollArea, QSizePolicy, QWidget)
+
+from .. import pdf_tools, services
+from ..db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_FRONT
+from . import theme
+from .widgets import (DropZone, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
+                      thumbnail, type_tag, vbox, wrap_label)
+
+DOC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic", ".bmp", ".tif", ".tiff", ".webp"}
+
+
+class ClientPage(QWidget):
+    def __init__(self, state):
+        super().__init__()
+        self.setObjectName("Page")
+        self.state = state
+        self.client_id = None
+        self.inputs = {}
+
+        self.name = label("", h1=True)
+        self.badge_host = hbox()
+        self.crumb = label("", muted=True)
+        back = button("← Клиенты", flat=True, on_click=lambda: self.state.navigate.emit("dashboard"))
+        self.btn_folder = button("Открыть папку", on_click=lambda: open_path(self.client().folder))
+        self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
+        self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
+        header = hbox(vbox(hbox(back, self.crumb, None, spacing=4), hbox(self.name, self.badge_host, None, spacing=14),
+                           spacing=2), None, self.btn_folder, self.btn_zip, self.btn_master)
+
+        # --- профиль
+        self.profile = frame("panel")
+        self.profile.setFixedWidth(380)
+        # --- документы
+        self.docs_panel = frame("panel")
+        self.docs_lay = vbox(spacing=8)
+        docs_host = QWidget()
+        docs_host.setLayout(self.docs_lay)
+        docs_scroll = QScrollArea()
+        docs_scroll.setWidgetResizable(True)
+        docs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        docs_scroll.setWidget(docs_host)
+        self.docs_title = label("ДОКУМЕНТЫ", caps=True)
+        drop = DropZone("Перетащите договоры, страховки, справки", "PDF или фото · тип определится сам",
+                        DOC_EXTENSIONS, "Документы (*.pdf *.jpg *.jpeg *.png *.heic)", compact=True)
+        drop.files_dropped.connect(self.add_files)
+        self.docs_panel.setLayout(vbox(hbox(self.docs_title, None,
+                                            label("Тип: маска имени файла или слова OCR", dim=True)),
+                                       docs_scroll, drop, spacing=10, margins=(18, 16, 18, 16)))
+        # --- очередь Master-PDF
+        self.queue_panel = frame("panel")
+        self.queue_panel.setFixedWidth(330)
+        self.queue_lay = vbox(spacing=8, margins=(18, 16, 18, 16))
+        self.queue_panel.setLayout(self.queue_lay)
+
+        body = QGridLayout()
+        body.setSpacing(16)
+        body.addWidget(self.profile, 0, 0)
+        body.addWidget(self.docs_panel, 0, 1)
+        body.addWidget(self.queue_panel, 0, 2)
+        body.setColumnStretch(1, 1)
+        self.setLayout(vbox(header, body, spacing=18, margins=(32, 24, 32, 20)))
+        state.data_changed.connect(lambda: self.client_id and self.isVisible() and self.refresh())
+
+    def client(self):
+        return self.state.db.client(self.client_id)
+
+    def open(self, client_id: int):
+        self.client_id = client_id
+        self.refresh()
+
+    # ------------------------------------------------------------ отрисовка
+
+    def refresh(self):
+        c = self.client()
+        if not c:
+            self.state.navigate.emit("dashboard")
+            return
+        db = self.state.db
+        docs = db.documents(c.id)
+        self.name.setText(c.full_name or "(без имени)")
+        clear_layout(self.badge_host)
+        self.badge_host.addWidget(badge(c.status))
+        self.crumb.setText(f"/ {c.batch_period}")
+        self._render_profile(c, docs)
+        self._render_docs(c, docs)
+        self._render_queue(c)
+
+    def _render_profile(self, c, docs):
+        old = self.profile.layout()
+        if old:
+            clear_layout(old)
+            QWidget().setLayout(old)
+        lay = vbox(spacing=10, margins=(18, 16, 18, 16))
+        lay.addWidget(label("ПРОФИЛЬ (ИЗ OCR, МОЖНО ПРАВИТЬ)", caps=True))
+        thumbs = hbox(spacing=10)
+        for code, text in ((BUILTIN_FRONT, "лицо"), (BUILTIN_BACK, "оборот")):
+            d = next((x for x in docs if x.doc_type == code and not x.is_processed_scan), None)
+            t = QLabel(text)
+            t.setFixedSize(110, 70)
+            t.setAlignment(Qt.AlignCenter)
+            t.setStyleSheet("border:1px solid rgba(255,255,255,0.3);border-radius:8px;color:#8C8C8C;")
+            if d:
+                pm = thumbnail(d.path, 108)
+                if pm:
+                    t.setPixmap(pm)
+                t.setCursor(Qt.PointingHandCursor)
+                t.setToolTip("Открыть редактор скана")
+                t.mousePressEvent = lambda _e, doc=d: self.open_scan_editor(doc)
+            thumbs.addWidget(t)
+        thumbs.addWidget(label("Нажмите на фото —\nредактор скана", dim=True))
+        thumbs.addStretch(1)
+        lay.addLayout(thumbs)
+
+        self.inputs = {}
+
+        def field(key, title, value, mono=False, warn=False):
+            e = QLineEdit(value)
+            if mono:
+                e.setProperty("mono", True)
+                e.setStyleSheet("font-family: Consolas, 'JetBrains Mono', monospace;")
+            if warn:
+                e.setProperty("warn", True)
+            self.inputs[key] = e
+            return vbox(label(title, dim=True), e, spacing=4)
+
+        lay.addLayout(field("full_name", "ФИО", c.full_name, warn=not c.full_name))
+        lay.addLayout(hbox(field("arc_number", "Номер ARC", c.arc_number, True, not c.arc_number),
+                           field("birth_date", "Дата рождения (YYMMDD)", c.birth_date, True)))
+        lay.addLayout(field("nationality", "Гражданство (англ.)", c.nationality, warn=not c.nationality))
+        lay.addLayout(field("registered_address", "Адрес регистрации (체류지, с оборота)",
+                            c.registered_address, warn=not c.registered_address))
+
+        bank = QFrame()
+        bank.setObjectName("BankBox")
+        bank.setStyleSheet("QFrame#BankBox{border:1px dashed rgba(255,255,255,0.3);border-radius:10px;}")
+        self.inputs["bank_name"] = QLineEdit(c.bank_name)
+        self.inputs["account_number"] = QLineEdit(c.account_number)
+        self.inputs["account_number"].setEchoMode(QLineEdit.Password)
+        eye = button("👁", flat=True)
+        eye.setFixedWidth(36)
+        eye.setToolTip("Показать / скрыть счет")
+        eye.clicked.connect(lambda: self.inputs["account_number"].setEchoMode(
+            QLineEdit.Normal if self.inputs["account_number"].echoMode() == QLineEdit.Password else QLineEdit.Password))
+        bank.setLayout(vbox(label("БАНК · ТОЛЬКО ВНУТРИ ПРОГРАММЫ", caps=True),
+                            hbox(self.inputs["bank_name"], spacing=6),
+                            hbox(self.inputs["account_number"], eye, spacing=6),
+                            label("Не попадает в Excel-реестр", dim=True), spacing=6, margins=(12, 10, 12, 10)))
+        lay.addWidget(bank)
+        if c.warnings:
+            lay.addWidget(wrap_label("⚠ " + "; ".join(c.warnings), warn=True))
+        lay.addStretch(1)
+        lay.addLayout(hbox(button("Удалить клиента", small=True, on_click=self.delete_client), None,
+                           button("Сохранить", primary=True, on_click=self.save_profile)))
+        self.profile.setLayout(lay)
+
+    def _render_docs(self, c, docs):
+        clear_layout(self.docs_lay)
+        db = self.state.db
+        rules = db.rules()
+        names = {r.code: r.doc_name for r in rules}
+        self.docs_title.setText(f"ДОКУМЕНТЫ КЛИЕНТА · {len(docs)}")
+        for d in docs:
+            row = QFrame()
+            row.setObjectName("DocRow")
+            locked = d.password_status == "locked"
+            border = f"1px solid {theme.ACCENT}" if locked or not d.doc_type else "1px solid rgba(255,255,255,0.12)"
+            row.setStyleSheet("QFrame#DocRow{background:#181818;border-radius:10px;border:%s;}" % border)
+            line1 = []
+            if d.doc_type == BUILTIN_A4 or d.is_processed_scan:
+                line1.append(type_tag(names.get(d.doc_type, d.doc_type) + (" · скан" if d.is_processed_scan and
+                                                                          d.doc_type != BUILTIN_A4 else "")))
+            else:
+                combo = QComboBox()
+                combo.addItem("Не определен — выберите", "")
+                for r in rules:
+                    if r.code != BUILTIN_A4:
+                        combo.addItem(r.doc_name, r.code)
+                combo.setCurrentIndex(max(0, combo.findData(d.doc_type)))
+                combo.setFixedWidth(200)
+                if not d.doc_type:
+                    combo.setProperty("warn", True)
+                combo.currentIndexChanged.connect(lambda _i, cb=combo, doc=d: self.change_type(doc.id, cb.currentData()))
+                line1.append(combo)
+            fname = button(d.path.name, flat=True, on_click=lambda _=False, p=d.path: open_path(p))
+            fname.setStyleSheet("text-align:left;color:#E6E6E6;font-weight:500;")
+            fname.setToolTip(f"Открыть файл: {d.path.name}")
+            fname.setMinimumWidth(40)
+            fname.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            line1 += [fname]
+            if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK) and not d.is_processed_scan:
+                line1.append(button("Редактор скана", small=True,
+                                    on_click=lambda _=False, doc=d: self.open_scan_editor(doc)))
+            rm = button("✕", flat=True, on_click=lambda _=False, doc=d: self.delete_doc(doc))
+            rm.setToolTip("Убрать документ из клиента")
+            line1.append(rm)
+            if locked:
+                tried = " и ".join(pdf_tools.birth_passwords(c.birth_date, c.arc_number)) or "дата рождения"
+                st = label(f"Пароль: {tried} не подошли — введите вручную", warn=True)
+                pw = QLineEdit()
+                pw.setPlaceholderText("Пароль")
+                pw.setFixedWidth(140)
+                pw.setProperty("warn", True)
+                ok = button("Снять", primary=True, small=True)
+                ok.clicked.connect(lambda _=False, doc=d, e=pw: self.unlock(doc.id, e.text()))
+                pw.returnPressed.connect(lambda doc=d, e=pw: self.unlock(doc.id, e.text()))
+                line2 = hbox(st, None, pw, ok, spacing=8)
+            else:
+                line2 = hbox(label(d.detected_by or "", dim=True), None)
+            row.setLayout(vbox(hbox(*line1, spacing=10), line2, spacing=4, margins=(10, 6, 10, 8)))
+            self.docs_lay.addWidget(row)
+        self.docs_lay.addStretch(1)
+
+    def _render_queue(self, c):
+        clear_layout(self.queue_lay)
+        self.queue_lay.addWidget(label("ОЧЕРЕДЬ MASTER-PDF", caps=True))
+        self.queue_lay.addWidget(wrap_label("Порядок — из «Типов документов». Нет документа — пропуск.", dim=True))
+        db = self.state.db
+        total = 0
+        all_docs = db.documents(c.id)
+        for n, (rule, docs) in enumerate(services.master_queue(db, c.id), start=1):
+            pages = sum(pdf_tools.page_count(d.path) for d in docs)
+            total += pages
+            locked = any(d.doc_type == rule.code and d.password_status == "locked" for d in all_docs)
+            num = QLabel(str(n))
+            num.setFixedSize(24, 24)
+            num.setAlignment(Qt.AlignCenter)
+            if docs:
+                num.setStyleSheet("background:#FFFFFF;color:#121212;border-radius:12px;font-weight:800;font-size:12px;")
+                right = label(f"{pages} стр.", muted=True)
+                css = "border:1px solid rgba(255,255,255,0.14);"
+            else:
+                num.setStyleSheet("background:#3A3A3A;color:#B3B3B3;border-radius:12px;font-weight:800;font-size:12px;")
+                right = label("ждет пароль" if locked else "нет · пропуск", warn=locked, dim=not locked)
+                css = f"border:1px dashed {theme.ACCENT if locked else '#5C5C5C'};"
+            row = QFrame()
+            row.setStyleSheet(f"QFrame{{{css}border-radius:10px;}} QLabel{{border:none;}}")
+            name = label(rule.doc_name)
+            if not docs:
+                name.setStyleSheet(f"color:{theme.ACCENT if locked else theme.DIM};")
+            row.setLayout(hbox(num, name, None, right, spacing=10, margins=(10, 8, 10, 8)))
+            self.queue_lay.addWidget(row)
+        link = button("Изменить порядок и типы →", flat=True, on_click=lambda: self.state.navigate.emit("doctypes"))
+        link.setStyleSheet(f"color:{theme.ACCENT};text-align:left;font-weight:600;")
+        self.queue_lay.addWidget(link)
+        self.queue_lay.addStretch(1)
+        line = QFrame()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background:rgba(255,255,255,0.1);")
+        self.queue_lay.addWidget(line)
+        self.queue_lay.addLayout(hbox(label("Итого", muted=True), None, label(f"<b>{total} стр.</b>")))
+        mp = Path(c.master_pdf) if c.master_pdf else None
+        if mp and mp.exists():
+            b = button(mp.name, flat=True, on_click=lambda: open_path(mp))
+            b.setStyleSheet("text-align:left;font-family:Consolas,monospace;font-size:12px;color:#E6E6E6;")
+            self.queue_lay.addWidget(b)
+        else:
+            self.queue_lay.addWidget(label("Master-PDF еще не собран", dim=True))
+
+    # ------------------------------------------------------------ действия
+
+    def save_profile(self):
+        values = {k: e.text().strip() for k, e in self.inputs.items()}
+        services.set_client_fields(self.state.db, self.client_id, **values)
+        self.state.data_changed.emit()
+        self.state.busy_changed.emit("Сохранено")
+
+    def change_type(self, doc_id, code):
+        self.state.db.update_document(doc_id, doc_type=code, detected_by="выбрано вручную")
+        services._refresh_status(self.state.db, self.client_id)
+        self.state.data_changed.emit()
+
+    def delete_doc(self, doc):
+        if QMessageBox.question(self, "Убрать документ", f"Убрать «{doc.path.name}» из клиента?\n"
+                                "Файл останется в папке клиента.") == QMessageBox.Yes:
+            self.state.db.delete_document(doc.id)
+            services._refresh_status(self.state.db, self.client_id)
+            self.state.data_changed.emit()
+
+    def delete_client(self):
+        c = self.client()
+        if QMessageBox.question(self, "Удалить клиента", f"Удалить {c.full_name} из периода {c.batch_period}?\n"
+                                "Папка с файлами на диске останется.") == QMessageBox.Yes:
+            self.state.db.delete_client(c.id)
+            self.state.data_changed.emit()
+            self.state.navigate.emit("dashboard")
+
+    def add_files(self, files):
+        cid = self.client_id
+        self.state.busy_changed.emit("Добавляю документы…")
+        run_task(services.add_documents, self.state.db, cid, files,
+                 on_progress=self.state.busy_changed.emit,
+                 on_done=lambda _r: (self.state.busy_changed.emit(""), self.state.data_changed.emit()),
+                 on_fail=lambda err: (self.state.busy_changed.emit(""), QMessageBox.warning(self, "Ошибка", err)))
+
+    def unlock(self, doc_id, password):
+        if not password:
+            return
+        if services.unlock_with_password(self.state.db, doc_id, self.client_id, password):
+            self.state.data_changed.emit()
+        else:
+            QMessageBox.warning(self, "Пароль не подошел", "Этот пароль не подходит к файлу.")
+
+    def build_master(self):
+        res = services.build_master(self.state.db, self.client_id)
+        self.state.data_changed.emit()
+        if not res.path:
+            QMessageBox.information(self, "Master-PDF", "Нет документов для Master-PDF.")
+            return
+        msg = f"Собран: {res.path.name}\n\nВключено: {', '.join(res.included)}"
+        if res.skipped:
+            msg += f"\nПропущено (нет у клиента): {', '.join(res.skipped)}"
+        box = QMessageBox(self)
+        box.setWindowTitle("Master-PDF")
+        box.setText(msg)
+        open_b = box.addButton("Открыть", QMessageBox.AcceptRole)
+        box.addButton("OK", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() == open_b:
+            open_path(res.path)
+
+    def export_zip(self):
+        folder = QFileDialog.getExistingDirectory(self, "Куда сохранить ZIP клиента")
+        if not folder:
+            return
+        out = services.export_client_zip(self.state.db, self.client_id, Path(folder))
+        self.state.data_changed.emit()
+        QMessageBox.information(self, "Готово", f"Архив сохранен:\n{out}")
+
+    def open_scan_editor(self, doc):
+        from .scan_editor import ScanEditor
+        dlg = ScanEditor(self.state, self.client_id, doc, self)
+        if dlg.exec():
+            self.state.data_changed.emit()

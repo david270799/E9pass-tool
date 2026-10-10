@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-echo === Установка E9pass OCR (один раз, нужен интернет) ===
+echo === Установка E9pay (один раз, нужен интернет) ===
 where python >nul 2>nul || (echo Python не найден. Установите Python 3.12 с python.org и отметьте "Add python.exe to PATH". & pause & exit /b 1)
 if not exist .venv python -m venv .venv || (echo Не удалось создать .venv & pause & exit /b 1)
 call .venv\Scripts\activate.bat
