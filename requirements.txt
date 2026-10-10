@@ -1,0 +1,4 @@
+easyocr==1.7.2
+openpyxl>=3.1
+pillow>=10
+pillow-heif>=0.16

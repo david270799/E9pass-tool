@@ -1,0 +1,81 @@
+from e9pass_ocr.parser import find_country, find_reg_no, info_from_reg_no, parse_card
+
+CLEAN = [
+    "외국인등록증 RESIDENCE CARD",
+    "외국인등록번호 Registration No",
+    "950101-5123456",
+    "성명 Name",
+    "NGUYEN VAN AN",
+    "국가 지역 Country/Region",
+    "VIETNAM",
+    "성별 Sex",
+    "M",
+    "체류자격 Status",
+    "비전문취업(E-9)",
+    "발급일자 Issue Date",
+    "2023.05.12",
+    "수원출입국 외국인사무소장",
+]
+
+
+def test_clean_card():
+    d = parse_card(CLEAN)
+    assert d.reg_no == "950101-5123456"
+    assert d.name == "NGUYEN VAN AN"
+    assert d.country == "VIETNAM"
+    assert d.country_ru == "Вьетнам"
+    assert d.sex == "M"
+    assert d.birth_date == "1995-01-01"
+    assert d.visa == "E-9"
+    assert d.visa_full == "비전문취업(E-9)"
+    assert d.issue_date == "2023-05-12"
+    assert d.issuer == "수원출입국 외국인사무소장"
+    assert d.warnings == []
+
+
+def test_noisy_ocr():
+    lines = [
+        "외국인등록증 RESIDENCE CARD",
+        "외국인등록번호 95O1O1 - 6I23456",   # буквы вместо цифр
+        "성명 Name TURSUNOVA MADINA",          # имя в одной строке с подписью
+        "국가/지역 UZBEKISTN",                # опечатка OCR
+        "체류자격 비전문취업 (E - 9)",
+        "발급일자 2024. 11. 3",
+        "서울출입국·외국인청장",
+    ]
+    d = parse_card(lines)
+    assert d.reg_no == "950101-6123456"
+    assert d.sex == "F"
+    assert d.name == "TURSUNOVA MADINA"
+    assert d.country == "UZBEKISTAN"
+    assert d.visa == "E-9"
+    assert d.issue_date == "2024-11-03"
+    assert d.issuer == "서울출입국·외국인청장"
+
+
+def test_missing_fields_are_flagged():
+    d = parse_card(["외국인등록증", "흐릿한 사진"])
+    assert "номер не найден" in d.warnings
+    assert any("ФИО" in w for w in d.warnings)
+
+
+def test_reg_no_century_and_sex():
+    assert info_from_reg_no("000315-8234567") == ("F", "2000-03-15")
+    assert info_from_reg_no("881231-5000000") == ("M", "1988-12-31")
+    assert info_from_reg_no("881341-5000000") == ("M", "")  # неверная дата
+
+
+def test_korean_reg_no_not_matched():
+    # 7-я цифра 1-4 — номер гражданина Кореи, не иностранца
+    assert find_reg_no(["900101-1234567"]) == ""
+
+
+def test_country_korean_and_indonesia_vs_india():
+    assert find_country(["국적 인도네시아"]) == "INDONESIA"
+    assert find_country(["국적 인도"]) == "INDIA"
+    assert find_country(["SRI LANKA"]) == "SRI LANKA"
+
+
+def test_visa_with_subtype():
+    d = parse_card(["체류자격 Status 방문취업(H-2)", "F-4-1"])
+    assert d.visa == "H-2"

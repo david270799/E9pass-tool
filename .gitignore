@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+models/*.pth
+# Личные данные никогда не коммитим
+*.xlsx
+input/
+samples/
