@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "E9pay — автозаполнение",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Заполняет форму заявки KICA данными клиента из программы E9pay на этом компьютере. Данные не уходят в интернет.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwtFkA/eEU66BHO4OoXR9F7s+4RlI65OvO10a5lGvujOTmsz4xQ2b4UXmM7HS4LRoDUJMaLRPYteD8aNXjW6auFwXahA3izMiQXlBGia5La/TLUHcsWPEyiOqXhfwMRymKJCBXVVJN3XqFjXOd0UaAe8v/B13DjMddN9KdPwT+ICkhJnySPudRgiokDEnWpBJ9KaWKO9lYaK/5FDcTDgdbEkfKtO0XFIcWJCf+4P/19ORi7BwsAeQLj1jaY+8ZG+lh9QZCESY5Eciu1EyzSuBKUzpWe78Vlm8CocHUSEyoy5eHPf+OVX5AkqSgxCSUospg2Qm91Xdc3XBf9yzgkeC+wIDAQAB",
   "icons": {

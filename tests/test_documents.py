@@ -120,3 +120,22 @@ def test_registry_contacts_roundtrip(env, tmp_path):
     assert db.client(cid).phone == "010-1234-5678" and db.client(cid).email == "test@mail.com"
     assert db.client(other).phone == "010-9876-5432" and db.client(other).email == "madina@gmail.com"
     assert res.unmatched == ["UNKNOWN PERSON"]
+
+
+def test_registry_reimport_updates_changed_address(env, tmp_path):
+    from openpyxl import load_workbook
+    db, cid, tmp = env
+    db.update_client(cid, registered_address="경기도 화성시 항남음 발안로 45")   # OCR с ошибкой
+    out = services.export_registry(db.clients("2026-08"), tmp / "r.xlsx")
+    wb = load_workbook(out)
+    ws = wb.active
+    hdr = [c.value for c in ws[1]]
+    ws.cell(2, hdr.index("Адрес регистрации") + 1, "경기도 화성시 향남읍 발안로 45, 101동 202호")
+    ws.cell(2, hdr.index("Телефон") + 1, "010-5555-6666")
+    wb.save(tmp / "r2.xlsx")
+    res = services.import_registry_contacts(db, tmp / "r2.xlsx", period="2026-08")
+    c = db.client(cid)
+    assert c.registered_address == "경기도 화성시 향남읍 발안로 45, 101동 202호"
+    assert c.phone == "010-5555-6666" and res.addresses_changed == 1
+    # повторный импорт того же файла ничего не меняет
+    assert services.import_registry_contacts(db, tmp / "r2.xlsx", period="2026-08").addresses_changed == 0

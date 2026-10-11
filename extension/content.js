@@ -114,7 +114,7 @@
 
     // Страна и адрес на сайте выбираются только в окнах поиска — их заполняем отдельно (pickers).
     if (texts(fieldsFor(LABELS.country)).length) mark("출신 국가", !!(d.country_ko || d.country_en));
-    if (texts(fieldsFor(LABELS.address)).length) mark("주소", !!(d.address_keywords || []).length);
+    if (texts(fieldsFor(LABELS.address)).length) mark("주소", !!d.address);
 
     f = fieldsFor(LABELS.email);
     if (f.length) {
@@ -179,15 +179,26 @@
   async function searchInLayer(layer, inputSel, keyword) {
     const input = layer.querySelector(inputSel);
     if (!input) return [];
-    const before = (layer.querySelector(".find-zip-result") || layer).innerText;
+    const resultBox = () => layer.querySelector(".find-zip-result") || layer;
+    const before = resultBox().innerText;
+    input.focus();
     setValue(input, keyword, false);
     input.style.outline = "";
     input.style.backgroundColor = "";
-    const btn = input.form && (input.form.querySelector(".btn-cmn, .btn1, button, input[type=submit]"));
-    if (btn) clickEl(btn);
-    else input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
-    await waitFor(() => (layer.querySelector(".find-zip-result") || layer).innerText !== before, 5000);
-    await sleep(250);
+    const btn = input.form && input.form.querySelector(".btn-cmn, .btn1, button, input[type=submit]");
+    // Несколько способов запустить поиск: кнопка «검색», Enter в поле, отправка формы.
+    const triggers = [
+      () => btn && clickEl(btn),
+      () => btn && btn.querySelector("*") && clickEl(btn.querySelector("*")),
+      () => ["keydown", "keypress", "keyup"].forEach((t) =>
+        input.dispatchEvent(new KeyboardEvent(t, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true }))),
+      () => input.form && input.form.requestSubmit && input.form.requestSubmit(),
+    ];
+    for (const trigger of triggers) {
+      try { trigger(); } catch (_) { /* следующий способ */ }
+      if (await waitFor(() => resultBox().innerText !== before, 2500)) break;
+    }
+    await sleep(300);
     return resultLinks(layer).filter((tr) => !/입력하십시오|입력하세요|없습니다/.test(tr.innerText));
   }
 
@@ -214,6 +225,24 @@
     return "не найдена — выберите в окне";
   }
 
+  // Запросы для «우편번호 찾기», если программа их не прислала (старая версия E9pay):
+  // «улица + номер дома», «동/리 + 번지», полный адрес; «101동 202호» — в детальный адрес.
+  function addressSearch(address) {
+    const [main, ...rest] = (address || "").split(",");
+    let detail = rest.join(",").trim();
+    const kws = [];
+    const road = main.match(/([가-힣0-9]+(?:로|길))\s*(\d+(?:-\d+)?)/);
+    if (road) kws.push(`${road[1]} ${road[2]}`);
+    const lot = main.match(/(?:^|[^가-힣0-9])([가-힣][가-힣0-9]*(?:동|리|가))\s*(\d+(?:-\d+)?)(?!\s*호)/);
+    if (lot) kws.push(`${lot[1]} ${lot[2]}`);
+    if (main.trim()) kws.push(main.trim());
+    if (!detail) {
+      const m = main.match(/(\d+\s*동\s*\d+\s*호|\d+\s*호)\s*$/);
+      if (m && (!road || m.index > road.index + road[0].length)) detail = m[1];
+    }
+    return { keywords: [...new Set(kws)], detail };
+  }
+
   function addressScore(text, address) {
     const tokens = (address || "").split(/[\s,]+/).filter((t) => t.length >= 2);
     const t = text.replace(/\s+/g, " ");
@@ -223,6 +252,11 @@
   async function pickAddress(d) {
     const fields = texts(fieldsFor(LABELS.address));
     const zip = fields[0];
+    if (!(d.address_keywords || []).length && d.address) {
+      const a = addressSearch(d.address);
+      d.address_keywords = a.keywords;
+      d.address_detail = d.address_detail || a.detail;
+    }
     if (!fields.length || !(d.address_keywords || []).length) return "";
     if (zip && zip.value) return "уже выбран";
     const btn = findButton(LABELS.address, "우편번호 찾기");

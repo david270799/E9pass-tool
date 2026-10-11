@@ -603,17 +603,40 @@ def normalize_phone(text: str) -> str:
 
 @dataclass
 class RegistryImportResult:
-    updated: List[str] = field(default_factory=list)       # кому записали телефон/почту
+    updated: List[str] = field(default_factory=list)       # кому что записали
     unmatched: List[str] = field(default_factory=list)     # строки, для которых клиент не найден
     rows: int = 0
+    addresses_changed: int = 0
+
+
+_HEADER_KEYS = {
+    "arc": ("номер arc", "arc", "외국인등록번호", "등록번호"),
+    "address": ("адрес", "주소", "address"),
+    "phone": ("телефон", "전화", "phone", "휴대폰"),
+    "email": ("e-mail", "email", "почта", "이메일", "메일"),
+    "name": ("фио (заглавными)", "фио", "이름", "성명", "name"),
+}
+
+
+def _header_map(cells: List[str]) -> dict:
+    """Номера колонок по заголовкам реестра (если это строка заголовков)."""
+    low = [c.strip().lower() for c in cells]
+    found = {}
+    for key, names in _HEADER_KEYS.items():
+        for i, c in enumerate(low):
+            if any(c == n or c.startswith(n) for n in names) and i not in found.values():
+                found.setdefault(key, i)
+                break
+    return found if len(found) >= 2 and ("arc" in found or "name" in found) else {}
 
 
 def import_registry_contacts(db: Database, path: Path, period: Optional[str] = None) -> RegistryImportResult:
-    """Excel с телефонами и почтой -> в профили клиентов.
+    """Excel реестра -> в профили клиентов: телефон, e-mail и измененный адрес.
 
-    Колонки могут быть в любом порядке и даже в одной ячейке: в каждой строке ищутся номер ARC
-    (иначе ФИО), телефон 010-…, e-mail. Сопоставление по ARC во всех периодах (свежий клиент
-    приоритетнее), без ARC — по ФИО в выбранном периоде.
+    Если есть строка заголовков (как в экспортированном реестре) — значения берутся из колонок
+    «Номер ARC», «Адрес регистрации», «Телефон», «E-mail». Без заголовков в каждой строке ищутся
+    ARC (иначе ФИО), телефон 010-… и e-mail — даже если все в одной ячейке.
+    Клиент ищется по ARC во всех периодах (свежий приоритетнее), без ARC — по ФИО в периоде.
     """
     from openpyxl import load_workbook
 
@@ -622,17 +645,29 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
     clients_period = db.clients(period) if period else []
     by_name = {normalize_name(c.full_name).lower(): c for c in clients_period if c.full_name}
     for ws in wb.worksheets:
+        header = {}
         for row in ws.iter_rows(values_only=True):
-            cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
+            raw = ["" if v is None else str(v).strip() for v in row]
+            cells = [c for c in raw if c]
             if not cells:
                 continue
+            if not header:
+                header = _header_map(raw)
+                if header:
+                    continue  # это строка заголовков
+            col = (lambda key: raw[header[key]] if key in header and header[key] < len(raw) else "")
             text = " | ".join(cells)
-            phone_m, email_m = _PHONE.search(text), _EMAIL.search(text)
-            if not phone_m and not email_m:
-                continue  # заголовок или строка без контактов
+            # колонка пустая — ищем во всей строке (все могло быть записано в одной ячейке)
+            phone_src = col("phone") or text
+            email_src = col("email") or text
+            phone_m, email_m = _PHONE.search(phone_src or ""), _EMAIL.search(email_src or "")
+            address = re.sub(r"\s+", " ", col("address")).strip() if "address" in header else ""
+            arc_src = col("arc") or _PHONE.sub(" ", text)
+            arc_m = _ARC.search(arc_src or "")
+            if not (phone_m or email_m or address):
+                continue
             res.rows += 1
             client = None
-            arc_m = _ARC.search(_PHONE.sub(" ", text))
             if arc_m:
                 found = db.clients_by_arc(arc_m.group(1) + arc_m.group(2))
                 client = found[0] if found else None
@@ -647,13 +682,22 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
             if client is None:
                 res.unmatched.append(label)
                 continue
-            updates = {}
+            updates, notes = {}, []
             if phone_m:
                 updates["phone"] = f"{phone_m.group(1)}-{phone_m.group(2)}-{phone_m.group(3)}"
+                notes.append(updates["phone"])
             if email_m:
                 updates["email"] = email_m.group(0).lower()
-            db.update_client(client.id, **updates)
-            res.updated.append(f"{client.full_name}: {updates.get('phone', '—')}, {updates.get('email', '—')}")
+                notes.append(updates["email"])
+            if address and address != re.sub(r"\s+", " ", client.registered_address or "").strip():
+                updates["registered_address"] = address
+                res.addresses_changed += 1
+                notes.append(f"новый адрес: {address}")
+            if updates:
+                db.update_client(client.id, **updates)
+                if "registered_address" in updates:
+                    set_client_fields(db, client.id)  # снять предупреждение «адрес не найден»
+                res.updated.append(f"{client.full_name}: {', '.join(notes)}")
     wb.close()
     return res
 

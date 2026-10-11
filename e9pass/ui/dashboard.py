@@ -125,7 +125,8 @@ class DashboardPage(QWidget):
         export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
         export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка)")
         import_b = button("Импорт реестра", on_click=self.import_registry)
-        import_b.setToolTip("Загрузить Excel с телефонами и e-mail — программа сама найдет клиентов по ARC или ФИО")
+        import_b.setToolTip("Загрузить Excel реестра обратно: телефоны, e-mail и исправленные адреса — "
+                            "программа сама найдет клиентов по ARC или ФИО")
 
         drop = DropZone("Перетащите архивы .zip / .rar", "в любое место окна или нажмите здесь · один архив = один клиент",
                         ARCHIVE_EXTENSIONS, "Архивы (*.zip *.rar)")
@@ -311,7 +312,8 @@ class DashboardPage(QWidget):
             QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать файл: {e}")
             return
         self.state.data_changed.emit()
-        msg = f"Строк с контактами: {res.rows}\nЗаписано клиентам: {len(res.updated)}"
+        msg = (f"Строк с данными: {res.rows}\nОбновлено клиентов: {len(res.updated)}"
+               f"\nИз них с новым адресом: {res.addresses_changed}")
         if res.unmatched:
             msg += "\n\nНе найдены (проверьте ARC или ФИО):\n• " + "\n• ".join(res.unmatched[:30])
         QMessageBox.information(self, "Импорт реестра", msg)
