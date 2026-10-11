@@ -90,7 +90,7 @@ class DashboardPage(QWidget):
         self.search.textChanged.connect(self.refresh)
         export_b = button("Экспорт реестра (ID + Адрес)", primary=True, on_click=self.export_registry)
 
-        drop = DropZone("Перетащите архивы .zip / .rar", "Один архив = один клиент (лицо ID, оборот ID, 통장)",
+        drop = DropZone("Перетащите архивы .zip / .rar", "в любое место окна или нажмите здесь · один архив = один клиент",
                         ARCHIVE_EXTENSIONS, "Архивы (*.zip *.rar)")
         drop.files_dropped.connect(self.state.archives_dropped.emit)
         self.t_clients = stat_tile("0", "клиентов в периоде")

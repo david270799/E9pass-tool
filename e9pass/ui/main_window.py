@@ -2,7 +2,7 @@
 
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QApplication, QButtonGroup, QFrame, QLabel, QMainWindow, QStackedWidget, QWidget
 
@@ -15,7 +15,7 @@ from .doctypes import DocTypesPage
 from .intake import IntakePage
 from .printing import PrintPage
 from .state import AppState
-from .widgets import button, hbox, label, vbox, wrap_label
+from .widgets import FullDropOverlay, button, hbox, label, vbox, wrap_label
 
 
 def rounded_logo(size: int) -> QPixmap:
@@ -90,12 +90,43 @@ class MainWindow(QMainWindow):
         root = QWidget()
         root.setLayout(hbox(side, self.stack, spacing=0))
         self.setCentralWidget(root)
+        # Перетаскивание файлов в любое место окна
+        self.drop_overlay = FullDropOverlay(root, self._drop_target)
+        QApplication.instance().installEventFilter(self)
 
         self.state.navigate.connect(self.show_page)
         self.state.open_client.connect(self.open_client)
         self.state.busy_changed.connect(self.busy.setText)
         self.state.archives_dropped.connect(lambda _files: self.show_page("intake"))
         self.show_page("dashboard")
+
+    def _drop_target(self):
+        """Что принимает текущий экран при перетаскивании: (заголовок, фильтр, обработчик)."""
+        from ..archive import ARCHIVE_EXTENSIONS
+        from .. import pdf_tools
+        key = self._current_key()
+        period = self.state.period
+        if key in ("dashboard", "intake"):
+            return (f"Отпустите, чтобы загрузить архивы в {period}",
+                    lambda f: f.suffix.lower() in ARCHIVE_EXTENSIONS,
+                    self.state.archives_dropped.emit)
+        if key == "client" and self.pages["client"].client_id:
+            page = self.pages["client"]
+            c = page.client()
+            if c is None or not page.drop.isEnabled():
+                return None
+            return (f"Отпустите, чтобы добавить документы: {c.full_name or 'клиент'}",
+                    lambda f: pdf_tools.real_extension(f) in pdf_tools.KNOWN_EXTENSIONS,
+                    page.add_files)
+        return None
+
+    def eventFilter(self, obj, event):
+        # Начало перетаскивания над любым виджетом окна — показываем подсветку на всё окно.
+        if event.type() == QEvent.DragEnter and not self.drop_overlay.isVisible():
+            if isinstance(obj, QWidget) and obj.window() is self and self.drop_overlay.begin(event.mimeData()):
+                event.ignore()
+                return True
+        return super().eventFilter(obj, event)
 
     def show_page(self, key: str):
         if key == "client" and not self.pages["client"].client_id:

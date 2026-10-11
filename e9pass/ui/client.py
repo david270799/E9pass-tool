@@ -49,8 +49,9 @@ class ClientPage(QWidget):
         docs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         docs_scroll.setWidget(docs_host)
         self.docs_title = label("ДОКУМЕНТЫ", caps=True)
-        drop = DropZone("Перетащите договоры, страховки, справки", "PDF или фото · тип определится сам",
-                        DOC_EXTENSIONS, "Документы (*.pdf *.jpg *.jpeg *.png *.heic)", compact=True)
+        drop = DropZone("Перетащите документы в любое место окна", "или нажмите здесь, чтобы выбрать файлы",
+                        DOC_EXTENSIONS, "Документы (*.pdf *.jpg *.jpeg *.png *.heic);;Все файлы (*)", compact=True,
+                        accept_fn=lambda f: pdf_tools.real_extension(f) in pdf_tools.KNOWN_EXTENSIONS)
         drop.files_dropped.connect(self.add_files)
         self.drop = drop
         self.btn_recheck = button("Определить заново", small=True, on_click=self.recheck)

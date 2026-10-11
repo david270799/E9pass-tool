@@ -280,10 +280,11 @@ class DropZone(QFrame):
     files_dropped = Signal(list)
 
     def __init__(self, title: str, subtitle: str, extensions: Iterable[str], dialog_filter: str,
-                 compact: bool = False):
+                 compact: bool = False, accept_fn: Optional[Callable[[Path], bool]] = None):
         super().__init__()
         self.setProperty("drop", True)
         self.extensions = {e.lower() for e in extensions}
+        self.accept_fn = accept_fn or (lambda f: f.suffix.lower() in self.extensions)
         self.dialog_filter = dialog_filter
         self.setAcceptDrops(True)
         self.setCursor(Qt.PointingHandCursor)
@@ -303,8 +304,8 @@ class DropZone(QFrame):
         for u in urls:
             p = Path(u.toLocalFile())
             if p.is_dir():
-                out += [f for f in sorted(p.iterdir()) if f.suffix.lower() in self.extensions]
-            elif p.suffix.lower() in self.extensions:
+                out += [f for f in sorted(p.iterdir()) if f.is_file() and self.accept_fn(f)]
+            elif p.is_file() and self.accept_fn(p):
                 out.append(p)
         return out
 
@@ -380,3 +381,95 @@ def run_task(fn: Callable, *args, on_done=None, on_fail=None, on_progress=None, 
     task.signals.failed.connect(lambda _e: _RUNNING.discard(task))
     HEAVY_POOL.start(task)
     return task
+
+
+# ---------------------------------------------------------------- перетаскивание на весь экран
+
+def collect_files(urls) -> List[Path]:
+    """Файлы из перетаскивания; папки раскрываются (без вложенных)."""
+    out = []
+    for u in urls:
+        p = Path(u.toLocalFile())
+        if p.is_dir():
+            out += [f for f in sorted(p.iterdir()) if f.is_file()]
+        elif p.is_file():
+            out.append(p)
+    return out
+
+
+class FullDropOverlay(QWidget):
+    """Подсветка на всё окно при перетаскивании файлов.
+
+    target() возвращает (заголовок, фильтр файлов, обработчик) для текущего экрана или None.
+    """
+
+    def __init__(self, parent: QWidget, target: Callable):
+        super().__init__(parent)
+        self.target = target
+        self.setAcceptDrops(True)
+        self.title, self.hint, self.ok = "", "", True
+        self.hide()
+
+    def begin(self, mime) -> bool:
+        spec = self.target()
+        if not spec or not mime.hasUrls():
+            return False
+        title, accepts, _handler = spec
+        files = collect_files(mime.urls())
+        good = [f for f in files if accepts(f)]
+        self.ok = bool(good)
+        self.title = title if self.ok else "Эти файлы сюда не подходят"
+        self.hint = (f"Файлов: {len(good)}" + (f" · пропущено: {len(files) - len(good)}" if len(good) < len(files)
+                                                else "")) if self.ok else "Отпустите — ничего не будет добавлено"
+        self.setGeometry(self.parentWidget().rect())
+        self.raise_()
+        self.show()
+        self.update()
+        return True
+
+    def paintEvent(self, _e):
+        from PySide6.QtGui import QColor, QFont, QPainter, QPen
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor(18, 18, 18, 238))
+        color = QColor(theme.ACCENT if self.ok else "#8C8C8C")
+        pen = QPen(color, 4, Qt.DashLine)
+        p.setPen(pen)
+        r = self.rect().adjusted(24, 24, -24, -24)
+        p.drawRoundedRect(r, 24, 24)
+        p.fillRect(r.adjusted(4, r.height() // 2 - 90, -4, -(r.height() // 2 - 90)), QColor(18, 18, 18))
+        f = QFont(self.font())
+        f.setPointSize(26)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(r.adjusted(0, -40, 0, -40), Qt.AlignCenter, self.title)
+        f.setPointSize(14)
+        f.setBold(False)
+        p.setFont(f)
+        p.setPen(QColor(theme.TEXT))
+        p.drawText(r.adjusted(0, 50, 0, 50), Qt.AlignCenter, self.hint)
+        p.end()
+
+    def dragEnterEvent(self, e):
+        e.acceptProposedAction()
+
+    def dragMoveEvent(self, e):
+        e.acceptProposedAction()
+
+    def dragLeaveEvent(self, e):
+        # уход курсора за пределы окна
+        from PySide6.QtGui import QCursor
+        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            self.hide()
+
+    def dropEvent(self, e):
+        self.hide()
+        spec = self.target()
+        if not spec:
+            return
+        _title, accepts, handler = spec
+        files = [f for f in collect_files(e.mimeData().urls()) if accepts(f)]
+        if files:
+            e.acceptProposedAction()
+            handler(files)
