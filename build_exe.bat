@@ -1,6 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
+set PYTHONUTF8=1
 rem Локальная сборка (то же делает GitHub Actions). Сначала выполните setup.bat.
 rem Нужен Inno Setup 6 (https://jrsoftware.org/isdl.php) для файла установщика.
 call .venv\Scripts\activate.bat || (echo Сначала запустите setup.bat & pause & exit /b 1)

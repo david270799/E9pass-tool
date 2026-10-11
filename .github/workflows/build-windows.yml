@@ -15,6 +15,8 @@ jobs:
     timeout-minutes: 90
     env:
       APP_VERSION: "0.2.${{ github.run_number }}"
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
 
