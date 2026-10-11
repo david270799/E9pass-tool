@@ -28,6 +28,32 @@ for ko, en in COUNTRIES_KO.items():
     _EN_TO_KO.setdefault(en, ko)
 
 
+def address_search(address: str):
+    """Запросы для окна «우편번호 찾기» (от точного к общему) и «детальный» адрес (дом/квартира).
+
+    Сайт ищет по «도로명 + 건물번호» или «동·리 + 번지»: короткий запрос надежнее полного адреса,
+    в котором OCR мог ошибиться в одной букве.
+    """
+    import re
+    address = (address or "").strip()
+    main, _, detail = address.partition(",")
+    keywords = []
+    road = re.search(r"([가-힣0-9]+(?:로|길))\s*(\d+(?:-\d+)?)", main)
+    if road:
+        keywords.append(f"{road.group(1)} {road.group(2)}")
+    # «산성동 334-11»; номер корпуса квартиры («101동 202호») начинается с цифры — не подходит
+    lot = re.search(r"(?<![가-힣0-9])([가-힣][가-힣0-9]*(?:동|리|가))\s*(\d+(?:-\d+)?)(?!\s*호)", main)
+    if lot:
+        keywords.append(f"{lot.group(1)} {lot.group(2)}")
+    if main.strip():
+        keywords.append(main.strip())
+    if not detail.strip():
+        m = re.search(r"(\d+\s*동\s*\d+\s*호|\d+\s*호|\d+\s*층.*)$", main)
+        detail = m.group(1) if m and (not road or m.start() > road.end()) else ""
+    seen = set()
+    return [k for k in keywords if not (k in seen or seen.add(k))], detail.strip()
+
+
 def form_data(c, temp_number: str = DEFAULT_TEMP_NUMBER) -> dict:
     """Поля формы KICA для клиента."""
     digits = "".join(ch for ch in c.arc_number if ch.isdigit())
@@ -49,6 +75,8 @@ def form_data(c, temp_number: str = DEFAULT_TEMP_NUMBER) -> dict:
         "country_en": c.nationality,
         "country_ko": _EN_TO_KO.get((c.nationality or "").upper(), ""),
         "address": c.registered_address,
+        "address_keywords": address_search(c.registered_address)[0],
+        "address_detail": address_search(c.registered_address)[1],
         "email_local": local, "email_domain": domain,
     }
 

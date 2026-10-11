@@ -22,8 +22,8 @@
   .c b { display:block; font-size:13.5px; }
   .c small { color:var(--muted); font-family:Consolas,monospace; }
   .warn { color:var(--accent); }
-  #result { margin:0 14px 12px; padding:10px 12px; border:1.5px solid var(--accent); border-radius:10px;
-            display:none; font-size:12.5px; line-height:1.5; }
+  .c.used { opacity:.55; }
+  .c.used b { color:var(--accent); }
 </style>
 </head>
 <body>
@@ -33,7 +33,6 @@
 </header>
 <div id="status">Подключаюсь к программе E9pay…</div>
 <input id="search" placeholder="Поиск по ФИО или ARC" autocomplete="off">
-<div id="result"></div>
 <div id="list"></div>
 <script src="popup.js"></script>
 </body>

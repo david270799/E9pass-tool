@@ -112,17 +112,9 @@
       mark("휴대폰 번호", ok);
     }
 
-    f = texts(fieldsFor(LABELS.country));
-    if (f.length) mark("출신 국가", setValue(f[0], d.country_ko || d.country_en, onlyIfEmpty));
-
-    f = texts(fieldsFor(LABELS.address));
-    if (f.length) {
-      // первое короткое поле — почтовый индекс (заполняется через «우편번호 찾기»)
-      const first = f[0];
-      const isZip = (first.maxLength > 0 && first.maxLength <= 7) || first.size <= 7 || f.length >= 3;
-      const target = isZip ? f[1] : f[0];
-      mark("주소", setValue(target, d.address, onlyIfEmpty));
-    }
+    // Страна и адрес на сайте выбираются только в окнах поиска — их заполняем отдельно (pickers).
+    if (texts(fieldsFor(LABELS.country)).length) mark("출신 국가", !!(d.country_ko || d.country_en));
+    if (texts(fieldsFor(LABELS.address)).length) mark("주소", !!(d.address_keywords || []).length);
 
     f = fieldsFor(LABELS.email);
     if (f.length) {
@@ -139,6 +131,144 @@
     return { done, missing };
   }
 
+  // ---------------------------------------------------------------- окна поиска сайта
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // offsetParent у окон с position:fixed всегда null — смотрим на реальные размеры и стили
+  const visible = (el) => {
+    if (!el || !el.getClientRects().length) return false;
+    const st = getComputedStyle(el);
+    return st.display !== "none" && st.visibility !== "hidden";
+  };
+
+  async function waitFor(fn, timeout = 6000, step = 150) {
+    const end = Date.now() + timeout;
+    while (Date.now() < end) {
+      const v = fn();
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  }
+
+  function clickEl(el) {
+    for (const type of ["mousedown", "mouseup", "click"]) {
+      el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  }
+
+  // кнопка «국가 찾기» / «우편번호 찾기» в строке поля
+  function findButton(labelNames, text) {
+    for (const cell of labelCells(labelNames)) {
+      const rows = [cell.closest("tr")];
+      for (let i = 1, r = rows[0]; i < (cell.rowSpan || 1) && r; i++) { r = r.nextElementSibling; rows.push(r); }
+      for (const row of rows.filter(Boolean)) {
+        const b = [...row.querySelectorAll("button, a, span, input[type=button]")]
+          .find((e) => norm(e.textContent || e.value).includes(norm(text)));
+        if (b) return b;
+      }
+    }
+    return [...document.querySelectorAll("button, a, span, input[type=button]")]
+      .find((e) => norm(e.textContent || e.value) === norm(text)) || null;
+  }
+
+  function resultLinks(layer) {
+    const box = layer.querySelector(".find-zip-result, .tbl-style2") || layer;
+    return [...box.querySelectorAll("tbody tr")].filter((tr) => !tr.querySelector("th"));
+  }
+
+  async function searchInLayer(layer, inputSel, keyword) {
+    const input = layer.querySelector(inputSel);
+    if (!input) return [];
+    const before = (layer.querySelector(".find-zip-result") || layer).innerText;
+    setValue(input, keyword, false);
+    input.style.outline = "";
+    input.style.backgroundColor = "";
+    const btn = input.form && (input.form.querySelector(".btn-cmn, .btn1, button, input[type=submit]"));
+    if (btn) clickEl(btn);
+    else input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+    await waitFor(() => (layer.querySelector(".find-zip-result") || layer).innerText !== before, 5000);
+    await sleep(250);
+    return resultLinks(layer).filter((tr) => !/입력하십시오|입력하세요|없습니다/.test(tr.innerText));
+  }
+
+  async function pickCountry(d) {
+    const keyword = d.country_ko || d.country_en;
+    const field = texts(fieldsFor(LABELS.country))[0];
+    if (!keyword || !field || field.value) return field && field.value ? "уже выбрана" : "";
+    const btn = findButton(LABELS.country, "국가 찾기");
+    if (!btn) { setValue(field, `${d.country_ko}(${d.country_en})`, true); return "вписана вручную"; }
+    clickEl(btn);
+    const layer = await waitFor(() => { const l = document.getElementById("findNationLayer"); return visible(l) && l; });
+    if (!layer) return "окно не открылось";
+    for (const kw of [d.country_ko, d.country_en].filter(Boolean)) {
+      const rows = await searchInLayer(layer, "#nationKeyWord, input[name=nationKeyWord], input[type=text]", kw);
+      // точное совпадение по корейскому названию: «우즈베키스탄(Uzbekistan)»
+      const row = rows.find((tr) => tr.innerText.replace(/\s/g, "").startsWith((d.country_ko || "").replace(/\s/g, "")) && d.country_ko)
+        || rows.find((tr) => (d.country_en && tr.innerText.toLowerCase().includes(d.country_en.toLowerCase())));
+      if (row) {
+        clickEl(row.querySelector("a") || row.querySelector("td") || row);
+        await waitFor(() => !visible(layer) || field.value, 3000);
+        return field.value ? "выбрана" : "выбрана в окне";
+      }
+    }
+    return "не найдена — выберите в окне";
+  }
+
+  function addressScore(text, address) {
+    const tokens = (address || "").split(/[\s,]+/).filter((t) => t.length >= 2);
+    const t = text.replace(/\s+/g, " ");
+    return tokens.reduce((s, tok) => s + (t.includes(tok) ? tok.length : 0), 0);
+  }
+
+  async function pickAddress(d) {
+    const fields = texts(fieldsFor(LABELS.address));
+    const zip = fields[0];
+    if (!fields.length || !(d.address_keywords || []).length) return "";
+    if (zip && zip.value) return "уже выбран";
+    const btn = findButton(LABELS.address, "우편번호 찾기");
+    if (!btn) return "кнопка не найдена";
+    clickEl(btn);
+    const layer = await waitFor(() => { const l = document.getElementById("findZipLayer"); return visible(l) && l; });
+    if (!layer) return "окно не открылось";
+    for (const kw of d.address_keywords) {
+      const rows = await searchInLayer(layer, "#addrKeyWord, input[name=addrKeyWord], input[type=text]", kw);
+      if (!rows.length) continue;
+      // лучшая строка: больше всего совпадений с адресом клиента; щелкаем «신주소» (или «구주소»)
+      let best = null, bestScore = -1;
+      for (const tr of rows) {
+        for (const a of tr.querySelectorAll("a, td")) {
+          const sc = addressScore(a.innerText, d.address) + (/신주소/.test(a.innerText) ? 1 : 0);
+          if (a.tagName === "A" && sc > bestScore) { best = a; bestScore = sc; }
+        }
+        if (!best) { const sc = addressScore(tr.innerText, d.address); if (sc > bestScore) { best = tr; bestScore = sc; } }
+      }
+      if (best) {
+        clickEl(best);
+        await waitFor(() => !visible(layer) || (zip && zip.value), 3000);
+        const detail = fields[fields.length - 1];
+        if (d.address_detail && detail && detail !== zip && !detail.value) setValue(detail, d.address_detail, true);
+        return "выбран";
+      }
+    }
+    return "не найден — выберите в окне (адрес в буфере, Ctrl+V)";
+  }
+
+  let picking = false;
+  const picked = { country: false, address: false };
+  const status = {};          // для диагностики: window.__e9payStatus
+  window.__e9payStatus = status;
+  async function runPickers(d) {
+    if (picking) return;
+    picking = true;
+    try {
+      // только когда поля уже видны (шаг 2 после «확인»), иначе подождем следующего изменения страницы
+      const ctry = texts(fieldsFor(LABELS.country))[0];
+      if (!picked.country && visible(ctry)) { picked.country = true; status.country = await pickCountry(d); }
+      const addr = texts(fieldsFor(LABELS.address))[0];
+      if (!picked.address && visible(addr)) { picked.address = true; status.address = await pickAddress(d); }
+    } finally { picking = false; }
+  }
+
   // После выбора клиента следим за страницей: на шаге 2 появятся новые поля — заполним пустые.
   let current = null, observer = null, until = 0;
   function watch() {
@@ -147,7 +277,7 @@
     observer = new MutationObserver(() => {
       if (!current || Date.now() > until) { observer.disconnect(); return; }
       clearTimeout(timer);
-      timer = setTimeout(() => fill(current, true), 300);
+      timer = setTimeout(() => { fill(current, true); runPickers(current); }, 300);
     });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true,
                                       attributeFilter: ["style", "class"] });
@@ -155,9 +285,11 @@
 
   window.__e9payFill = (data) => {
     current = data;
+    picked.country = picked.address = false;
     until = Date.now() + 15 * 60 * 1000;
     const res = fill(data, false);
     watch();
+    runPickers(data);
     return res;
   };
 

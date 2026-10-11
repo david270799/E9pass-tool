@@ -1,7 +1,7 @@
 // Окно расширения: список клиентов из программы E9pay (127.0.0.1, только этот компьютер).
 const PORTS = [47821, 47822, 47823];
 const HDR = { "X-E9pay": "1" };
-let base = null, clients = [];
+let base = null, clients = [], used = {};
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s || "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -16,15 +16,23 @@ async function connect() {
   return null;
 }
 
+const usedKey = (c) => `${c.arc || c.id}`;
+
 function render() {
   const q = $("search").value.trim().toLowerCase();
-  const shown = clients.filter((c) => !q || (c.name || "").toLowerCase().includes(q) || (c.arc || "").includes(q));
-  $("list").innerHTML = shown.map((c) => `
-    <button class="c" data-id="${c.id}">
-      <b>${esc(c.name || "без имени")}</b>
-      <small>${esc(c.arc)} · ${esc(c.period)}</small>
+  const shown = clients
+    .filter((c) => !q || (c.name || "").toLowerCase().includes(q) || (c.arc || "").includes(q))
+    // уже использованные — вниз списка
+    .sort((a, b) => (used[usedKey(a)] ? 1 : 0) - (used[usedKey(b)] ? 1 : 0));
+  $("list").innerHTML = shown.map((c) => {
+    const u = used[usedKey(c)];
+    return `
+    <button class="c${u ? " used" : ""}" data-id="${c.id}" data-key="${esc(usedKey(c))}">
+      <b>${u ? "✓ " : ""}${esc(c.name || "без имени")}</b>
+      <small>${esc(c.arc)} · ${esc(c.period)}${u ? " · использован " + esc(u) : ""}</small>
       ${c.phone && c.email ? "" : '<br><small class="warn">нет телефона или e-mail</small>'}
-    </button>`).join("") || '<div id="status">Клиентов не найдено</div>';
+    </button>`;
+  }).join("") || '<div id="status">Клиентов не найдено</div>';
 }
 
 async function fillTab(data) {
@@ -45,21 +53,21 @@ async function fillTab(data) {
   return { done: [...done], missing: [...missing].filter((x) => !done.has(x)) };
 }
 
-async function choose(id) {
+async function choose(id, key) {
   const r = await fetch(`${base}/client/${id}`, { cache: "no-store", headers: HDR });
   const data = await r.json();
-  // адрес — в буфер обмена, чтобы вставить в окне «우편번호 찾기» (Ctrl+V)
+  // адрес — в буфер обмена на случай, если в окне «우편번호 찾기» придется выбрать вручную (Ctrl+V)
   try { if (data.address) await navigator.clipboard.writeText(data.address); } catch (_) { /* не критично */ }
-  let res;
-  try { res = await fillTab(data); } catch (e) { res = { done: [], missing: [], error: String(e) }; }
-  const box = $("result");
-  box.style.display = "block";
-  box.innerHTML = res.error ? `Не удалось заполнить: ${esc(res.error)}` :
-    `<b>${esc(data.name)}</b><br>` +
-    (res.done.length ? `✓ Заполнено: ${esc(res.done.join(", "))}<br>` : "На странице нет знакомых полей.<br>") +
-    (res.missing.length ? `<span class="warn">Нет данных: ${esc(res.missing.join(", "))}</span><br>` : "") +
-    (data.address ? "Адрес скопирован — в окне «우편번호 찾기» нажмите Ctrl+V.<br>" : "") +
-    "После «확인» откройте расширение снова — заполнятся поля шага 2 (или они заполнятся сами).";
+  try {
+    await fillTab(data);
+  } catch (e) {
+    $("status").innerHTML = `<span class="warn">Не удалось заполнить: ${esc(String(e))}</span>`;
+    return;
+  }
+  // отметка «использован» — клиент уходит вниз списка
+  used[key] = new Date().toLocaleDateString("ru-RU");
+  await chrome.storage.local.set({ used });
+  window.close();
 }
 
 (async () => {
@@ -72,12 +80,13 @@ async function choose(id) {
   const r = await fetch(`${base}/clients`, { cache: "no-store", headers: HDR });
   const data = await r.json();
   clients = data.clients || [];
+  used = (await chrome.storage.local.get("used")).used || {};
   $("status").textContent = `Период ${data.period || "—"} · клиентов: ${clients.length}`;
   render();
   $("search").addEventListener("input", render);
   $("search").focus();
   $("list").addEventListener("click", (e) => {
     const b = e.target.closest(".c");
-    if (b) choose(b.dataset.id);
+    if (b) choose(b.dataset.id, b.dataset.key);
   });
 })();

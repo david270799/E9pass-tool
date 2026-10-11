@@ -50,3 +50,12 @@ def test_form_data_for_kica(bridge):
     assert d["phone"] == ["010", "1234", "5678"]
     assert d["country_ko"] == "우즈베키스탄"
     assert (d["email_local"], d["email_domain"]) == ("azamat", "gmail.com")
+
+
+def test_address_search_keywords():
+    from e9pass.browser_bridge import address_search
+    assert address_search("경기도 화성시 향남읍 발안로 45, 101동 202호") == \
+        (["발안로 45", "경기도 화성시 향남읍 발안로 45"], "101동 202호")
+    assert address_search("대전광역시 중구 산성동 334-11")[0][0] == "산성동 334-11"
+    kw, detail = address_search("경기도 수원시 팔달구 효원로 123 101동 202호")
+    assert kw[0] == "효원로 123" and "101동 202" not in kw and detail == "101동 202호"
