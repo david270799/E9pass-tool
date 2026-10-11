@@ -298,6 +298,16 @@ class ClientPage(QWidget):
 
     def save_profile(self):
         values = {k: e.text().strip() for k, e in self.inputs.items()}
+        c = self.client()
+        if values.get("arc_number") and values["arc_number"] != c.arc_number:
+            recent, _old = services.recent_duplicates(self.state.db, values["arc_number"], exclude_id=c.id)
+            if recent:
+                where = "\n".join(f"• {services.describe_client(x)}" for x in recent)
+                if QMessageBox.warning(self, "Такой ARC уже есть",
+                                       f"Клиент с этим номером ARC добавлен меньше года назад:\n\n{where}\n\n"
+                                       "Все равно сохранить? (прежнюю запись можно удалить на дашборде)",
+                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                    return
         services.set_client_fields(self.state.db, self.client_id, **values)
         self.state.data_changed.emit()
         self.state.busy_changed.emit("Сохранено")

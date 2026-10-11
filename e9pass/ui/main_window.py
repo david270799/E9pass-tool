@@ -108,8 +108,8 @@ class MainWindow(QMainWindow):
         period = self.state.period
         if key in ("dashboard", "intake"):
             return (f"Отпустите, чтобы загрузить архивы в {period}",
-                    lambda f: f.suffix.lower() in ARCHIVE_EXTENSIONS,
-                    self.state.archives_dropped.emit)
+                    lambda f: f.suffix.lower() in ARCHIVE_EXTENSIONS | {".e9pay"},
+                    self._dropped_on_dashboard)
         if key == "client" and self.pages["client"].client_id:
             page = self.pages["client"]
             c = page.client()
@@ -119,6 +119,16 @@ class MainWindow(QMainWindow):
                     lambda f: pdf_tools.real_extension(f) in pdf_tools.KNOWN_EXTENSIONS,
                     page.add_files)
         return None
+
+    def _dropped_on_dashboard(self, files):
+        """Архивы — на приемку, файлы .e9pay — прием клиентов от коллеги."""
+        from .transfer_dialogs import import_package_flow
+        archives = [f for f in files if f.suffix.lower() != ".e9pay"]
+        if archives:
+            self.state.archives_dropped.emit(archives)
+        for f in files:
+            if f.suffix.lower() == ".e9pay":
+                import_package_flow(self, self.state, f)
 
     def eventFilter(self, obj, event):
         # Начало перетаскивания над любым виджетом окна — показываем подсветку на всё окно.

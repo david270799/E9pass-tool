@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QFileDialog, QFrame, QGridLayout, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QLineEdit, QMessageBox,
                                QProgressBar, QScrollArea, QWidget)
 
 from .. import services
@@ -14,8 +14,18 @@ from .widgets import (MONTHS_RU, DropZone, FlowLayout, badge, button, chip, clea
                       run_task, stat_tile, vbox)
 
 
+def local_date(utc_text: str, with_time: bool = False) -> str:
+    """created_at из SQLite (UTC) -> местная дата."""
+    from datetime import datetime, timezone
+    try:
+        dt = datetime.strptime(utc_text[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).astimezone()
+    except (TypeError, ValueError):
+        return utc_text or "—"
+    return dt.strftime("%Y-%m-%d %H:%M" if with_time else "%Y-%m-%d")
+
+
 class ClientCard(QFrame):
-    def __init__(self, state, client, docs, rule_names):
+    def __init__(self, state, client, docs, rule_names, selected=False, on_select=None):
         super().__init__()
         self.state, self.client_id = state, client.id
         self.setProperty("card", True)
@@ -27,7 +37,14 @@ class ClientCard(QFrame):
         rm.setToolTip("Удалить клиента со всеми данными")
         rm.setStyleSheet(f"QPushButton{{color:{theme.DIM};font-size:14px;min-height:0;padding:0;}}"
                          f"QPushButton:hover{{color:{theme.ACCENT};}}")
-        top = hbox(name, None, badge(client.status), rm, spacing=8)
+        self.check = QCheckBox()
+        self.check.setChecked(selected)
+        self.check.setToolTip("Отметить — для передачи коллеге")
+        if on_select:
+            self.check.toggled.connect(lambda v: on_select(client.id, v))
+        if selected:
+            self.setProperty("selected", True)
+        top = hbox(self.check, name, None, badge(client.status), rm, spacing=8)
         arc = label(client.arc_number or "—", mono=True)
         info = label(" · ".join(x for x in (client.nationality, client.birth_date) if x), muted=True)
         addr = label(client.registered_address or "Адрес не распознан")
@@ -38,16 +55,26 @@ class ClientCard(QFrame):
         types = {d.doc_type for d in docs}
         chips = FlowLayout(6)
         for code, text in ((BUILTIN_FRONT, "ID лицо"), (BUILTIN_BACK, "ID оборот"), (BUILTIN_BANK, "통장")):
-            chips.addWidget(chip(text, "ok" if code in types else "missing"))
+            ch = chip(text, "ok" if code in types else "missing")
+            ch.setToolTip(f"{text}: {'есть' if code in types else 'нет — не было в архиве'}")
+            chips.addWidget(ch)
         extra = [rule_names.get(t, t) for t in types
                  if t and t not in (BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_A4)]
         for t in sorted(extra)[:3]:
-            chips.addWidget(chip(t))
+            ch = chip(t)
+            ch.setToolTip(f"Документ «{t}» добавлен")
+            chips.addWidget(ch)
         if any(d.password_status == "locked" for d in docs):
             chips.addWidget(chip("PDF с паролем", "warn"))
         if client.master_pdf:
-            chips.addWidget(chip("Master-PDF"))
-        lay = vbox(top, hbox(arc, info, None, spacing=14), addr, chips, spacing=8, margins=(16, 14, 16, 14))
+            ch = chip("Master-PDF собран")
+            ch.setToolTip("Все документы клиента уже склеены в один PDF по очереди из «Типов документов»")
+            chips.addWidget(ch)
+        if client.printed:
+            chips.addWidget(chip("напечатан"))
+        added = label(f"добавлен {local_date(client.created_at)}", dim=True)
+        added.setToolTip(f"Дата добавления в программу: {local_date(client.created_at, with_time=True)}")
+        lay = vbox(top, hbox(arc, info, None, spacing=14), addr, added, chips, spacing=6, margins=(16, 14, 16, 14))
         if client.warnings:
             w = label("⚠ " + "; ".join(client.warnings[:2]), warn=True)
             w.setStyleSheet("font-size:12px;")
@@ -131,6 +158,17 @@ class DashboardPage(QWidget):
             filters.addWidget(b)
         self.filter_buttons["all"].setChecked(True)
         filters.addStretch(1)
+        # выбор клиентов и передача коллеге
+        self.selected = set()
+        self.sel_label = label("", muted=True)
+        self.btn_select_all = button("Выбрать всех", chip=True, on_click=self.select_all)
+        self.btn_clear = button("Снять", chip=True, on_click=self.clear_selection)
+        self.btn_send = button("Передать клиентов…", chip=True, on_click=self.send_clients)
+        self.btn_send.setToolTip("Сохранить отмеченных клиентов в файл .e9pay для другого сотрудника")
+        self.btn_receive = button("Принять клиентов…", chip=True, on_click=self.receive_clients)
+        self.btn_receive.setToolTip("Открыть файл .e9pay от коллеги (или перетащите его в окно)")
+        for wdg in (self.sel_label, self.btn_select_all, self.btn_clear, self.btn_send, self.btn_receive):
+            filters.addWidget(wdg)
 
         self.grid = QGridLayout()
         self.grid.setSpacing(14)
@@ -152,9 +190,44 @@ class DashboardPage(QWidget):
                     tiles, self.import_bar, filters, self.empty, scroll, footer,
                     spacing=16, margins=(32, 24, 32, 20))
         self.setLayout(root)
-        state.period_changed.connect(lambda _: self.refresh())
+        state.period_changed.connect(lambda _: (self.selected.clear(), self.refresh()))
         state.data_changed.connect(self.refresh)
         self.refresh()
+
+    # ------------------------------------------------------------ выбор и передача
+
+    def _toggle(self, client_id, value):
+        (self.selected.add if value else self.selected.discard)(client_id)
+        self._update_selection()
+
+    def _update_selection(self):
+        ids = {c.id for c in self.state.db.clients(self.state.period)}
+        self.selected &= ids
+        n = len(self.selected)
+        self.sel_label.setText(f"Отмечено: {n}" if n else "")
+        self.btn_clear.setVisible(bool(n))
+        self.btn_send.setEnabled(bool(n))
+        self.btn_send.setText(f"Передать клиентов ({n})…" if n else "Передать клиентов…")
+        self.btn_send.setProperty("primary", bool(n))
+        self.btn_send.style().unpolish(self.btn_send)
+        self.btn_send.style().polish(self.btn_send)
+
+    def select_all(self):
+        self.selected = {c.id for c in self.state.db.clients(self.state.period)}
+        self.refresh()
+
+    def clear_selection(self):
+        self.selected.clear()
+        self.refresh()
+
+    def send_clients(self):
+        from .transfer_dialogs import export_clients_flow
+        ids = [c.id for c in self.state.db.clients(self.state.period) if c.id in self.selected]
+        export_clients_flow(self, self.state, ids)
+
+    def receive_clients(self):
+        from .transfer_dialogs import choose_and_import
+        choose_and_import(self, self.state)
 
     def _shift(self, months):
         from .state import shift_period
@@ -193,10 +266,12 @@ class DashboardPage(QWidget):
         clear_layout(self.grid)
         names = db.rule_names()
         for i, c in enumerate(shown):
-            self.grid.addWidget(ClientCard(self.state, c, db.documents(c.id), names), i // 3, i % 3)
+            self.grid.addWidget(ClientCard(self.state, c, db.documents(c.id), names, c.id in self.selected,
+                                           self._toggle), i // 3, i % 3)
         for col in range(3):
             self.grid.setColumnStretch(col, 1)
         self.empty.setVisible(not clients)
+        self._update_selection()
 
     # ------------------------------------------------------------ экспорт
 

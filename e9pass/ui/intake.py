@@ -88,7 +88,7 @@ class IntakePage(QWidget):
         self._render_list()
         if self.list.currentRow() == self.queue.index(item):
             self.show_item(self.list.currentRow())
-        done = sum(1 for q in self.queue if q.status in ("готово", "ошибка"))
+        done = sum(1 for q in self.queue if q.status not in ("в очереди", "обработка"))
         total = len(self.queue)
 
         def progress(msg):
@@ -106,8 +106,13 @@ class IntakePage(QWidget):
 
         def finished(result: services.IntakeResult):
             item.result = result
-            item.status = "ошибка" if result.error else "готово"
-            item.detail = result.error or ("; ".join(result.warnings) if result.warnings else "все данные найдены")
+            if result.pending:
+                last = result.duplicates[0]
+                item.status = "повтор"
+                item.detail = f"уже добавлен {(last.created_at or '')[:10]} · период {last.batch_period}"
+            else:
+                item.status = "ошибка" if result.error else "готово"
+                item.detail = result.error or ("; ".join(result.warnings) if result.warnings else "все данные найдены")
             self.running = False
             self._render_list()
             self.state.data_changed.emit()
@@ -129,16 +134,17 @@ class IntakePage(QWidget):
         self.list.blockSignals(True)
         self.list.clear()
         for q in self.queue:
-            mark = {"готово": "✓", "ошибка": "✕", "обработка": "…", "в очереди": "·"}[q.status]
+            mark = {"готово": "✓", "ошибка": "✕", "обработка": "…", "в очереди": "·", "повтор": "⛔",
+                    "не принят": "—"}[q.status]
             if q.status == "готово" and q.result and q.result.warnings:
                 mark = "⚠"
             it = QListWidgetItem(f"{mark}  {q.archive.name}\n     {q.status} · {q.detail}"[:120])
-            if mark in ("⚠", "✕"):
+            if mark in ("⚠", "✕", "⛔"):
                 it.setForeground(Qt.yellow)
             self.list.addItem(it)
         self.list.setCurrentRow(row if 0 <= row < len(self.queue) else -1)
         self.list.blockSignals(False)
-        done = sum(1 for q in self.queue if q.status in ("готово", "ошибка"))
+        done = sum(1 for q in self.queue if q.status not in ("в очереди", "обработка"))
         self.title.setText(f"Приемка документов · {len(self.queue)} архив(ов)" if self.queue else
                            "Приемка документов")
         self.steps.setText(f"Обработано {done} из {len(self.queue)}" if self.queue else "")
@@ -163,6 +169,9 @@ class IntakePage(QWidget):
         q = self.queue[row]
         clear_layout(self.detail_lay)
         self.detail_lay.setContentsMargins(0, 0, 0, 0)
+        if q.result is not None and q.result.pending:
+            self._render_duplicate(q, row)
+            return
         if not q.result or not q.result.client_id:
             self.detail_lay.setContentsMargins(40, 40, 40, 40)
             self.detail_lay.addStretch(1)
@@ -178,7 +187,7 @@ class IntakePage(QWidget):
                 m = wrap_label(f"{q.archive.name}\n\n{text}", muted=q.status != "ошибка", warn=q.status == "ошибка")
                 m.setAlignment(Qt.AlignCenter)
                 self.detail_lay.addWidget(m)
-                if q.status == "ошибка":
+                if q.status in ("ошибка", "не принят"):
                     self.detail_lay.addLayout(hbox(None, button("Повторить", on_click=lambda: self.retry(row)), None))
             self.detail_lay.addStretch(1)
             return
@@ -258,6 +267,56 @@ class IntakePage(QWidget):
         footer.setLayout(hbox(hint, None, delete_b, reread, open_card, margins=(18, 12, 18, 14)))
         footer.setStyleSheet("QFrame#IntakeFooter{border-top:1px solid rgba(255,255,255,0.10);}")
         self.detail_lay.addWidget(footer)
+
+    def _render_duplicate(self, q, row):
+        r = q.result
+        f = r.fields
+        self.detail_lay.setContentsMargins(24, 24, 24, 24)
+        title = label("Повтор: этот клиент уже добавлялся меньше года назад", h2=True)
+        title.setStyleSheet(f"color:{theme.ACCENT};font-size:18px;font-weight:800;")
+        self.detail_lay.addWidget(title)
+        self.detail_lay.addWidget(wrap_label(
+            f"Из архива {q.archive.name} распознан: {f.get('full_name') or 'без имени'} · ARC {f.get('arc_number')}",
+            muted=True))
+        box = frame("warnbox")
+        lines = "\n".join(f"• {services.describe_client(c)}" for c in r.duplicates)
+        box.setLayout(vbox(wrap_label(f"Уже есть в программе:\n{lines}", warn=True), margins=(14, 10, 14, 10)))
+        self.detail_lay.addWidget(box)
+        self.detail_lay.addWidget(wrap_label(
+            "Повторно принять клиента можно, только если с прошлого добавления прошел год. "
+            "Если прежняя запись ошибочная — удалите ее и примите архив заново (распознанные данные сохранены, "
+            "повторного OCR не будет).", dim=True))
+        self.detail_lay.addStretch(1)
+        open_old = button("Открыть прежнего", on_click=lambda: self.state.open_client.emit(r.duplicates[0].id))
+        replace = button("Удалить прежнего и принять", primary=True, on_click=lambda: self._accept_duplicate(row))
+        reject = button("Не принимать", on_click=lambda: self._reject_duplicate(row))
+        self.detail_lay.addLayout(hbox(None, open_old, reject, replace))
+
+    def _accept_duplicate(self, row):
+        q = self.queue[row]
+        old = "\n".join(f"• {services.describe_client(c)}" for c in q.result.duplicates)
+        if QMessageBox.question(self, "Удалить прежнего", f"Удалить прежнюю запись со всеми файлами?\n\n{old}",
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.state.busy_changed.emit("Принимаю архив…")
+
+        def done(result):
+            q.result, q.status = result, "готово"
+            q.detail = "; ".join(result.warnings) if result.warnings else "принят заново"
+            self.state.busy_changed.emit("")
+            self._render_list()
+            self.show_item(row)
+            self.state.data_changed.emit()
+
+        run_task(services.replace_duplicates_and_finalize, self.state.db, q.result, on_done=done,
+                 on_fail=lambda err: (self.state.busy_changed.emit(""), QMessageBox.warning(self, "Ошибка", err)))
+
+    def _reject_duplicate(self, row):
+        q = self.queue[row]
+        services.discard_intake(q.result)
+        q.result, q.status, q.detail = None, "не принят", "повтор — архив не принят"
+        self._render_list()
+        self.show_item(row)
 
     def delete_client(self, client_id: int, row: int):
         from .client import confirm_delete_client

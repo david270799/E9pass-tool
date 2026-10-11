@@ -64,6 +64,38 @@ class IntakeResult:
     photos: List[PhotoResult] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     error: str = ""
+    # Повтор: клиент с тем же ARC добавлялся меньше года назад — ждет решения пользователя.
+    period: str = ""
+    fields: dict = field(default_factory=dict)
+    incoming: Optional[Path] = None
+    duplicates: List[Client] = field(default_factory=list)
+    old_duplicates: List[Client] = field(default_factory=list)   # больше года назад — не мешают
+
+    @property
+    def pending(self) -> bool:
+        return self.client_id is None and bool(self.duplicates) and not self.error
+
+
+DUPLICATE_DAYS = 365
+
+
+def recent_duplicates(db: Database, arc: str, exclude_id: Optional[int] = None,
+                      days: int = DUPLICATE_DAYS) -> Tuple[List[Client], List[Client]]:
+    """Клиенты с тем же ARC: (добавлены меньше `days` дней назад, добавлены раньше)."""
+    from datetime import datetime, timedelta, timezone
+    # created_at в SQLite хранится в UTC
+    border = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    recent, old = [], []
+    for c in db.clients_by_arc(arc):
+        if c.id == exclude_id:
+            continue
+        (recent if (c.created_at or "") >= border else old).append(c)
+    return recent, old
+
+
+def describe_client(c: Client) -> str:
+    return (f"{c.full_name or 'без имени'} · ARC {c.arc_number} · добавлен {(c.created_at or '')[:10]} "
+            f"· период {c.batch_period}")
 
 
 def intake_archive(db: Database, period: str, archive_path: Path, engine: Optional[OcrEngine] = None,
@@ -99,20 +131,25 @@ def intake_archive(db: Database, period: str, archive_path: Path, engine: Option
     if any(p.doc_type == "" for p in result.photos):
         warnings.append("есть нераспознанные файлы")
 
-    # --- клиент: новый или уже есть в периоде с тем же ARC
-    existing = db.find_by_arc(period, fields.get("arc_number", ""))
-    if existing:
-        client_id = existing.id
-        folder = existing.folder
-        result.merged_into_existing = True
-        updates = {k: v for k, v in fields.items() if v and not getattr(existing, k)}
-        db.update_client(client_id, **updates)
-    else:
-        name = fields.get("full_name") or archive_path.stem
-        arc6 = (fields.get("arc_number") or "")[:6]
-        folder = _unique(config.period_dir(period) / config.safe_name(f"{name}_{arc6}" if arc6 else name))
-        folder.mkdir(parents=True)
-        client_id = db.add_client(period, folder_path=str(folder), source_archive=archive_path.name, **fields)
+    result.period, result.fields, result.warnings, result.incoming = period, fields, warnings, incoming
+    result.duplicates, result.old_duplicates = recent_duplicates(db, fields.get("arc_number", ""))
+    if result.duplicates:
+        progress("Повтор: клиент уже добавлялся")
+        return result  # ждем решения: удалить прежнего и принять или не принимать
+    return finalize_intake(db, result, progress)
+
+
+def finalize_intake(db: Database, result: IntakeResult, progress: Progress = _noop) -> IntakeResult:
+    """Создает клиента из распознанного архива (после проверки повторов)."""
+    period, fields, warnings = result.period, result.fields, result.warnings
+    if result.old_duplicates and not any(w.startswith("ранее добавлялся") for w in warnings):
+        last = result.old_duplicates[0]
+        warnings.append(f"ранее добавлялся {(last.created_at or '')[:10]} (больше года назад)")
+    name = fields.get("full_name") or result.archive.stem
+    arc6 = (fields.get("arc_number") or "")[:6]
+    folder = _unique(config.period_dir(period) / config.safe_name(f"{name}_{arc6}" if arc6 else name))
+    folder.mkdir(parents=True)
+    client_id = db.add_client(period, folder_path=str(folder), source_archive=result.archive.name, **fields)
 
     (folder / ORIGINALS).mkdir(parents=True, exist_ok=True)
     for p in result.photos:
@@ -120,9 +157,9 @@ def intake_archive(db: Database, period: str, archive_path: Path, engine: Option
         shutil.move(str(p.path), target)
         p.path = target
         db.add_document(client_id, p.doc_type, target, original_name=p.path.name, detected_by=p.reason)
-    shutil.rmtree(incoming, ignore_errors=True)
+    if result.incoming:
+        shutil.rmtree(result.incoming, ignore_errors=True)
 
-    # --- ID на А4 из лицевой стороны
     fronts = [p for p in result.photos if p.doc_type == detect.FRONT]
     if fronts:
         progress("Готовлю ID на А4")
@@ -130,8 +167,23 @@ def intake_archive(db: Database, period: str, archive_path: Path, engine: Option
 
     _refresh_status(db, client_id, warnings)
     result.client_id = client_id
-    result.warnings = warnings
+    result.duplicates = []
     return result
+
+
+def replace_duplicates_and_finalize(db: Database, result: IntakeResult, progress: Progress = _noop) -> IntakeResult:
+    """«Удалить прежнего и принять заново»."""
+    for c in result.duplicates:
+        delete_client_everything(db, c.id)
+    result.duplicates = []
+    return finalize_intake(db, result, progress)
+
+
+def discard_intake(result: IntakeResult):
+    """«Не принимать»: распознанные файлы удаляются, архив не трогается."""
+    if result.incoming:
+        shutil.rmtree(result.incoming, ignore_errors=True)
+    result.duplicates = []
 
 
 def _read_front(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None):

@@ -186,9 +186,22 @@ class Database:
                             (period, arc)).fetchone()
             return self._client(row) if row else None
 
+    def clients_by_arc(self, arc: str) -> List[Client]:
+        """Все клиенты с этим номером ARC во всех периодах (сравниваются только цифры)."""
+        digits = "".join(ch for ch in arc if ch.isdigit())
+        if len(digits) < 13:
+            return []
+        with self.conn() as c:
+            rows = c.execute("SELECT * FROM clients WHERE replace(replace(arc_number,'-',''),' ','')=? "
+                             "ORDER BY created_at DESC", (digits,))
+            return [self._client(r) for r in rows]
+
     def add_client(self, period: str, **fields) -> int:
         warnings = fields.pop("warnings", [])
-        keys = [k for k in fields if k in CLIENT_FIELDS]
+        created_at = fields.pop("created_at", None)
+        if created_at:
+            fields["created_at"] = created_at
+        keys = [k for k in fields if k in CLIENT_FIELDS or k == "created_at"]
         with self.conn() as c:
             cur = c.execute(
                 f"INSERT INTO clients(batch_period, warnings{''.join(', ' + k for k in keys)})"

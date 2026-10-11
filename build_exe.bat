@@ -8,7 +8,7 @@ call .venv\Scripts\activate.bat || (echo Сначала запустите setup
 python -m pip install pyinstaller
 pyinstaller --noconfirm --windowed --name E9pay --icon e9pass\assets\logo.ico ^
   --add-data "e9pass\assets;e9pass\assets" ^
-  --collect-all easyocr --collect-all torchvision --collect-all pymupdf --collect-all pikepdf ^
+  --collect-all easyocr --collect-all torchvision --collect-all pymupdf --collect-all pikepdf --collect-all pyzipper ^
   --collect-submodules pillow_heif --collect-submodules skimage ^
   --exclude-module tkinter --exclude-module matplotlib ^
   main.py || (echo Ошибка сборки & pause & exit /b 1)

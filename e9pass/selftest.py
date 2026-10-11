@@ -52,6 +52,11 @@ def run() -> int:
             log(f"A4 PDF: {d.page_count} стр.")
         services.export_registry(db.clients("2026-01"), home / "r.xlsx")
         log("Excel: ок")
+        from . import transfer
+        pkg = transfer.export_clients(db, [cid], home / "t.e9pay", password="1234")
+        if len(transfer.read_package(db, pkg, "1234").clients) != 1:
+            raise RuntimeError("передача .e9pay не читается")
+        log("Передача .e9pay с паролем: ок")
         _ = scan.FILTER_CLEAN
 
         from PySide6.QtWidgets import QApplication
