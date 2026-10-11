@@ -49,6 +49,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Recurse models dist/E9pay/models
+          Copy-Item -Recurse extension dist/E9pay/extension
           New-Item -ItemType Directory -Force dist/E9pay/selftest | Out-Null
           Copy-Item tests/fixtures/sample_front.jpg dist/E9pay/selftest/
           "{0:N0} MB" -f ((Get-ChildItem dist/E9pay -Recurse | Measure-Object Length -Sum).Sum / 1MB)

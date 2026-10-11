@@ -77,12 +77,16 @@ class MainWindow(QMainWindow):
                 nav_lay.addWidget(line)
         self.busy = wrap_label("", dim=True)
         self.folder_label = wrap_label(f"Офлайн-режим\n{config.data_dir()}", dim=True)
+        self.ext_btn = button("🧩  Расширение Chrome", flat=True, on_click=self.show_extension)
+        self.ext_btn.setStyleSheet(f"QPushButton{{color:{theme.MUTED};text-align:left;}}"
+                                   f"QPushButton:hover{{color:{theme.ACCENT};}}")
         self.collapse_btn = button("«  Свернуть меню", flat=True, on_click=self.toggle_sidebar)
         self.collapse_btn.setStyleSheet(f"QPushButton{{color:{theme.DIM};text-align:left;}}"
                                         f"QPushButton:hover{{color:{theme.ACCENT};}}")
         self.side, self.brand_w = side, brand_w
         self.side_lay = vbox(hbox(logo, brand_w, None, spacing=10, margins=(6, 0, 0, 18)), nav_lay, None,
-                             self.busy, self.folder_label, self.collapse_btn, spacing=6, margins=(16, 22, 16, 16))
+                             self.busy, self.folder_label, self.ext_btn, self.collapse_btn, spacing=6,
+                             margins=(16, 22, 16, 16))
         side.setLayout(self.side_lay)
 
         # --- экраны
@@ -116,6 +120,10 @@ class MainWindow(QMainWindow):
         self.calendar_timer.start(60_000)
         self.set_sidebar_collapsed(self.settings.value("sidebar_collapsed", False, type=bool))
 
+    def show_extension(self):
+        from .extension_dialog import ExtensionDialog
+        ExtensionDialog(getattr(self, "bridge_port", None), self).exec()
+
     def toggle_sidebar(self):
         self.set_sidebar_collapsed(not self.sidebar_collapsed)
         self.settings.setValue("sidebar_collapsed", self.sidebar_collapsed)
@@ -133,6 +141,8 @@ class MainWindow(QMainWindow):
             b.setToolTip(text.strip() if collapsed else "")
             b.setStyleSheet("text-align:center;padding:10px 0;" if collapsed else "")
         self.collapse_btn.setText("»" if collapsed else "«  Свернуть меню")
+        self.ext_btn.setText("🧩" if collapsed else "🧩  Расширение Chrome")
+        self.ext_btn.setToolTip("Расширение Chrome" if collapsed else "")
         self.collapse_btn.setToolTip("Развернуть меню" if collapsed else "")
         self.side_lay.setContentsMargins(*((10, 22, 10, 16) if collapsed else (16, 22, 16, 16)))
 
@@ -205,6 +215,11 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("E9pay")
     app.setStyleSheet(theme.QSS)
-    win = MainWindow(Database())
+    db = Database()
+    win = MainWindow(db)
     win.show()
+    # связь с расширением Chrome (только 127.0.0.1, только наше расширение)
+    from .. import browser_bridge
+    from .extension_dialog import temp_number
+    win.bridge_port = browser_bridge.start(db, get_period=lambda: win.state.period, get_temp=temp_number)
     sys.exit(app.exec())

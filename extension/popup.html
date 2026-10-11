@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>E9pay</title>
+<style>
+  :root { --bg:#121212; --surface:#1E1E1E; --text:#FFFFFF; --muted:#B3B3B3; --accent:#F5C518; --line:rgba(255,255,255,.14); }
+  body { margin:0; width:360px; background:var(--bg); color:var(--text);
+         font:14px "Segoe UI","Malgun Gothic",sans-serif; }
+  header { display:flex; align-items:center; gap:10px; padding:14px 14px 10px; }
+  header img { width:32px; height:32px; border-radius:8px; }
+  header b { font-size:16px; }
+  header span { color:var(--muted); font-size:12px; display:block; }
+  #status { margin:0 14px 8px; color:var(--muted); font-size:12px; }
+  #search { margin:0 14px 10px; width:calc(100% - 28px); box-sizing:border-box; height:36px; padding:0 10px;
+            background:#141414; color:var(--text); border:1px solid var(--line); border-radius:8px; }
+  #search:focus { outline:none; border-color:var(--accent); }
+  #list { max-height:360px; overflow-y:auto; padding:0 10px 10px; }
+  .c { display:block; width:100%; text-align:left; background:var(--surface); color:var(--text);
+       border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:6px; cursor:pointer; }
+  .c:hover { border-color:var(--accent); }
+  .c b { display:block; font-size:13.5px; }
+  .c small { color:var(--muted); font-family:Consolas,monospace; }
+  .warn { color:var(--accent); }
+  #result { margin:0 14px 12px; padding:10px 12px; border:1.5px solid var(--accent); border-radius:10px;
+            display:none; font-size:12.5px; line-height:1.5; }
+</style>
+</head>
+<body>
+<header>
+  <img src="icon48.png" alt="">
+  <div><b>E9pay</b><span>выберите клиента — форма заполнится</span></div>
+</header>
+<div id="status">Подключаюсь к программе E9pay…</div>
+<input id="search" placeholder="Поиск по ФИО или ARC" autocomplete="off">
+<div id="result"></div>
+<div id="list"></div>
+<script src="popup.js"></script>
+</body>
+</html>

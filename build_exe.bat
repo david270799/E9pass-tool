@@ -13,6 +13,7 @@ pyinstaller --noconfirm --windowed --name E9pay --icon e9pass\assets\logo.ico ^
   --exclude-module tkinter --exclude-module matplotlib ^
   main.py || (echo Ошибка сборки & pause & exit /b 1)
 xcopy /E /I /Y models dist\E9pay\models >nul
+xcopy /E /I /Y extension dist\E9pay\extension >nul
 xcopy /I /Y tests\fixtures\sample_front.jpg dist\E9pay\selftest\ >nul
 if exist tools\UnRAR.exe xcopy /Y tools\UnRAR.exe dist\E9pay\tools\ >nul
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" (
