@@ -46,7 +46,10 @@ class ClientCard(QFrame):
             self.setProperty("selected", True)
         top = hbox(self.check, name, None, badge(client.status), rm, spacing=8)
         arc = label(client.arc_number or "—", mono=True)
-        info = label(" · ".join(x for x in (client.nationality, client.birth_date) if x), muted=True)
+        arc.setMinimumWidth(arc.sizeHint().width())  # номер ARC всегда целиком
+        # гражданство на карточке не показываем — места мало, оно есть в карточке клиента
+        info = label(client.birth_date or "", muted=True)
+        info.setMinimumWidth(10)
         addr = label(client.registered_address or "Адрес не распознан")
         addr.setStyleSheet(f"font-size:12.5px;color:{theme.MUTED if client.registered_address else theme.ACCENT};")
         addr.setMinimumWidth(10)
