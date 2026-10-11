@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS clients (
     source_archive TEXT DEFAULT '',
     master_pdf TEXT DEFAULT '',
     printed INTEGER DEFAULT 0,
+    phone TEXT DEFAULT '',
+    email TEXT DEFAULT '',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_clients_period ON clients(batch_period);
@@ -74,7 +76,7 @@ DEFAULT_RULES = [
 
 CLIENT_FIELDS = ("full_name", "arc_number", "birth_date", "nationality", "registered_address",
                  "bank_name", "account_number", "folder_path", "status", "source_archive",
-                 "master_pdf", "printed")
+                 "master_pdf", "printed", "phone", "email")
 
 
 @dataclass
@@ -95,6 +97,8 @@ class Client:
     master_pdf: str = ""
     printed: int = 0
     created_at: str = ""
+    phone: str = ""
+    email: str = ""
 
     @property
     def folder(self) -> Path:
@@ -136,6 +140,11 @@ class Database:
         self.path = Path(path) if path else config.db_path()
         with self.conn() as c:
             c.executescript(SCHEMA)
+            # миграция старых баз: новые колонки
+            cols = {r[1] for r in c.execute("PRAGMA table_info(clients)")}
+            for col in ("phone", "email"):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE clients ADD COLUMN {col} TEXT DEFAULT ''")
             if not c.execute("SELECT 1 FROM doc_rules LIMIT 1").fetchone():
                 c.executemany(
                     "INSERT INTO doc_rules(code, doc_name, filename_patterns, ocr_keywords, sort_order,"

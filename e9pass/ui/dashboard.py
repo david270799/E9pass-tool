@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QFileDialog, QFrame, QGridLayout, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QLabel, QFileDialog, QFrame, QGridLayout, QLineEdit, QMessageBox,
                                QProgressBar, QScrollArea, QWidget)
 
 from .. import services
@@ -44,11 +44,17 @@ class ClientCard(QFrame):
             self.check.toggled.connect(lambda v: on_select(client.id, v))
         if selected:
             self.setProperty("selected", True)
-        top = hbox(self.check, name, None, badge(client.status), rm, spacing=8)
+        warn_icon = QLabel("⚠")
+        warn_icon.setStyleSheet(f"color:{theme.ACCENT};font-size:16px;")
+        warn_icon.setCursor(Qt.WhatsThisCursor)
+        warn_icon.setToolTip("Проверьте:\n• " + "\n• ".join(client.warnings) if client.warnings else "")
+        warn_icon.setVisible(bool(client.warnings))
+        top = hbox(self.check, name, None, warn_icon, badge(client.status), rm, spacing=8)
         arc = label(client.arc_number or "—", mono=True)
         arc.setMinimumWidth(arc.sizeHint().width())  # номер ARC всегда целиком
-        # гражданство на карточке не показываем — места мало, оно есть в карточке клиента
-        info = label(client.birth_date or "", muted=True)
+        # гражданство и дату рождения на карточке не показываем — дата видна по номеру ARC
+        contact = " · ".join(x for x in (client.phone, client.email) if x)
+        info = label(contact, muted=True)
         info.setMinimumWidth(10)
         addr = label(client.registered_address or "Адрес не распознан")
         addr.setStyleSheet(f"font-size:12.5px;color:{theme.MUTED if client.registered_address else theme.ACCENT};")
@@ -79,9 +85,7 @@ class ClientCard(QFrame):
         added.setToolTip(f"Дата добавления в программу: {local_date(client.created_at, with_time=True)}")
         lay = vbox(top, hbox(arc, info, None, spacing=14), addr, added, chips, spacing=6, margins=(16, 14, 16, 14))
         if client.warnings:
-            w = label("⚠ " + "; ".join(client.warnings[:2]), warn=True)
-            w.setStyleSheet("font-size:12px;")
-            lay.addWidget(w)
+            self.setToolTip("Проверьте: " + "; ".join(client.warnings))
         self.setLayout(lay)
 
     def mouseReleaseEvent(self, e):
@@ -118,7 +122,10 @@ class DashboardPage(QWidget):
         self.search.setPlaceholderText("Поиск по ФИО или ARC")
         self.search.setFixedWidth(240)
         self.search.textChanged.connect(self.refresh)
-        export_b = button("Экспорт реестра (ID + Адрес)", primary=True, on_click=self.export_registry)
+        export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
+        export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка)")
+        import_b = button("Импорт реестра", on_click=self.import_registry)
+        import_b.setToolTip("Загрузить Excel с телефонами и e-mail — программа сама найдет клиентов по ARC или ФИО")
 
         drop = DropZone("Перетащите архивы .zip / .rar", "в любое место окна или нажмите здесь · один архив = один клиент",
                         ARCHIVE_EXTENSIONS, "Архивы (*.zip *.rar)")
@@ -189,7 +196,7 @@ class DashboardPage(QWidget):
         footer = hbox(label("Реестр: №, ФИО (заглавными и строчными), Номер ARC, Дата рождения, "
                             "Гражданство, Адрес регистрации — без банковских данных", dim=True), None, zip_all)
 
-        root = vbox(hbox(switcher, self.month_label, None, self.search, export_b, spacing=14),
+        root = vbox(hbox(switcher, self.month_label, None, self.search, import_b, export_b, spacing=14),
                     tiles, self.import_bar, filters, self.empty, scroll, footer,
                     spacing=16, margins=(32, 24, 32, 20))
         self.setLayout(root)
@@ -293,6 +300,21 @@ class DashboardPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Файл открыт в Excel. Закройте его и повторите.")
             return
         QMessageBox.information(self, "Готово", f"Реестр сохранен:\n{path}")
+
+    def import_registry(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Excel с телефонами и e-mail", "", "Excel (*.xlsx *.xlsm)")
+        if not path:
+            return
+        try:
+            res = services.import_registry_contacts(self.state.db, Path(path), period=self.state.period)
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.warning(self, "Ошибка", f"Не удалось прочитать файл: {e}")
+            return
+        self.state.data_changed.emit()
+        msg = f"Строк с контактами: {res.rows}\nЗаписано клиентам: {len(res.updated)}"
+        if res.unmatched:
+            msg += "\n\nНе найдены (проверьте ARC или ФИО):\n• " + "\n• ".join(res.unmatched[:30])
+        QMessageBox.information(self, "Импорт реестра", msg)
 
     def export_zip_all(self):
         clients = self.state.db.clients(self.state.period)

@@ -38,7 +38,7 @@ class ClientPage(QWidget):
 
         # --- профиль
         self.profile = frame("panel")
-        self.profile.setFixedWidth(380)
+        self.profile.setFixedWidth(400)
         # --- документы
         self.docs_panel = frame("panel")
         self.docs_lay = vbox(spacing=8)
@@ -99,11 +99,17 @@ class ClientPage(QWidget):
         self._render_queue(c)
 
     def _render_profile(self, c, docs):
-        old = self.profile.layout()
+        # профиль внутри прокрутки — на невысоком экране поля не налезают друг на друга
+        if self.profile.layout() is None:
+            self.profile_scroll = QScrollArea()
+            self.profile_scroll.setWidgetResizable(True)
+            self.profile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.profile.setLayout(vbox(self.profile_scroll, margins=(0, 0, 0, 0)))
+        old = self.profile_scroll.takeWidget()
         if old:
-            clear_layout(old)
-            QWidget().setLayout(old)
-        lay = vbox(spacing=10, margins=(18, 16, 18, 16))
+            old.deleteLater()
+        host = QWidget()
+        lay = vbox(spacing=10, margins=(18, 16, 14, 16))
         lay.addWidget(label("ПРОФИЛЬ (ИЗ OCR, МОЖНО ПРАВИТЬ)", caps=True))
         thumbs = hbox(spacing=10)
         for code, text in ((BUILTIN_FRONT, "лицо"), (BUILTIN_BACK, "оборот")):
@@ -142,6 +148,7 @@ class ClientPage(QWidget):
         lay.addLayout(field("nationality", "Гражданство (англ.)", c.nationality, warn=not c.nationality))
         lay.addLayout(field("registered_address", "Адрес регистрации (체류지, с оборота)",
                             c.registered_address, warn=not c.registered_address))
+        lay.addLayout(hbox(field("phone", "Телефон", c.phone, True), field("email", "E-mail", c.email)))
 
         bank = QFrame()
         bank.setObjectName("BankBox")
@@ -163,7 +170,8 @@ class ClientPage(QWidget):
             lay.addWidget(wrap_label("⚠ " + "; ".join(c.warnings), warn=True))
         lay.addStretch(1)
         lay.addLayout(hbox(None, button("Сохранить", primary=True, on_click=self.save_profile)))
-        self.profile.setLayout(lay)
+        host.setLayout(lay)
+        self.profile_scroll.setWidget(host)
 
     def _render_docs(self, c, docs):
         clear_layout(self.docs_lay)

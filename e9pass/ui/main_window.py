@@ -49,15 +49,20 @@ class MainWindow(QMainWindow):
         side.setFixedWidth(248)
         logo = QLabel()
         logo.setPixmap(rounded_logo(44))
+        brand_w = QWidget()
         brand = vbox(label("E9pay"), label("документы клиентов", dim=True), spacing=0)
         brand.itemAt(0).widget().setStyleSheet("font-weight:800;font-size:18px;")
+        brand_w.setLayout(brand)
         self.nav = QButtonGroup(self)
         self.nav_buttons = {}
-        items = [("dashboard", "1   Импорт и реестр"), ("intake", "      Приемка архивов"),
-                 ("client", "2   Документы клиента"), ("print", "3   Печать отчетности"),
-                 ("doctypes", "☰   Типы документов")]
+        # (ключ, текст, короткая подпись для свернутого меню)
+        items = [("dashboard", "1   Импорт и реестр", "1"), ("intake", "      Приемка архивов", "⤓"),
+                 ("client", "2   Документы клиента", "2"), ("print", "3   Печать отчетности", "3"),
+                 ("doctypes", "☰   Типы документов", "☰")]
+        self.nav_texts = {}
         nav_lay = vbox(spacing=4)
-        for key, text in items:
+        for key, text, short in items:
+            self.nav_texts[key] = (text, short)
             b = button(text)
             b.setObjectName("NavButton")
             b.setCheckable(True)
@@ -72,8 +77,13 @@ class MainWindow(QMainWindow):
                 nav_lay.addWidget(line)
         self.busy = wrap_label("", dim=True)
         self.folder_label = wrap_label(f"Офлайн-режим\n{config.data_dir()}", dim=True)
-        side.setLayout(vbox(hbox(logo, brand, None, spacing=10, margins=(6, 0, 0, 18)), nav_lay, None,
-                            self.busy, self.folder_label, spacing=6, margins=(16, 22, 16, 16)))
+        self.collapse_btn = button("«  Свернуть меню", flat=True, on_click=self.toggle_sidebar)
+        self.collapse_btn.setStyleSheet(f"QPushButton{{color:{theme.DIM};text-align:left;}}"
+                                        f"QPushButton:hover{{color:{theme.ACCENT};}}")
+        self.side, self.brand_w = side, brand_w
+        self.side_lay = vbox(hbox(logo, brand_w, None, spacing=10, margins=(6, 0, 0, 18)), nav_lay, None,
+                             self.busy, self.folder_label, self.collapse_btn, spacing=6, margins=(16, 22, 16, 16))
+        side.setLayout(self.side_lay)
 
         # --- экраны
         self.stack = QStackedWidget()
@@ -99,6 +109,32 @@ class MainWindow(QMainWindow):
         self.state.busy_changed.connect(self.busy.setText)
         self.state.archives_dropped.connect(lambda _files: self.show_page("intake"))
         self.show_page("dashboard")
+        from PySide6.QtCore import QSettings, QTimer
+        self.settings = QSettings("E9pay", "E9pay")
+        self.calendar_timer = QTimer(self)  # раз в минуту: не наступил ли новый месяц
+        self.calendar_timer.timeout.connect(self.state.follow_calendar)
+        self.calendar_timer.start(60_000)
+        self.set_sidebar_collapsed(self.settings.value("sidebar_collapsed", False, type=bool))
+
+    def toggle_sidebar(self):
+        self.set_sidebar_collapsed(not self.sidebar_collapsed)
+        self.settings.setValue("sidebar_collapsed", self.sidebar_collapsed)
+
+    def set_sidebar_collapsed(self, collapsed: bool):
+        """Свернутое меню: узкая полоса с логотипом и короткими подписями (полные — в подсказке)."""
+        self.sidebar_collapsed = collapsed
+        self.side.setFixedWidth(76 if collapsed else 248)
+        self.brand_w.setVisible(not collapsed)
+        self.folder_label.setVisible(not collapsed)
+        self.busy.setVisible(not collapsed)
+        for key, b in self.nav_buttons.items():
+            text, short = self.nav_texts[key]
+            b.setText(short if collapsed else text)
+            b.setToolTip(text.strip() if collapsed else "")
+            b.setStyleSheet("text-align:center;padding:10px 0;" if collapsed else "")
+        self.collapse_btn.setText("»" if collapsed else "«  Свернуть меню")
+        self.collapse_btn.setToolTip("Развернуть меню" if collapsed else "")
+        self.side_lay.setContentsMargins(*((10, 22, 10, 16) if collapsed else (16, 22, 16, 16)))
 
     def _drop_target(self):
         """Что принимает текущий экран при перетаскивании: (заголовок, фильтр, обработчик)."""

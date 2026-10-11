@@ -102,3 +102,21 @@ def test_registry_has_upper_and_lower_name(env, tmp_path):
     rows = list(load_workbook(out).active.iter_rows(values_only=True))
     assert rows[0][:3] == ("№", "ФИО (заглавными)", "ФИО (строчными)")
     assert rows[1][1:3] == ("EGAMBERDIEV AZAMAT PULATOVICH", "egamberdiev azamat pulatovich")
+
+
+def test_registry_contacts_roundtrip(env, tmp_path):
+    from openpyxl import Workbook
+    db, cid, tmp = env
+    other = db.add_client("2026-08", full_name="TURSUNOVA MADINA", arc_number="000315-8234567",
+                          folder_path=str(tmp / "x"))
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["№", "ФИО", "Номер ARC", "Телефон", "E-mail"])
+    ws.append([1, "TEST", "950101-5123456", "01012345678", "Test@Mail.com"])
+    ws.append([2, "tursunova madina 010-9876-5432 madina@gmail.com"])   # все в одной ячейке, без ARC
+    ws.append([3, "UNKNOWN PERSON", "", "010-1111-2222", ""])
+    wb.save(tmp / "contacts.xlsx")
+    res = services.import_registry_contacts(db, tmp / "contacts.xlsx", period="2026-08")
+    assert db.client(cid).phone == "010-1234-5678" and db.client(cid).email == "test@mail.com"
+    assert db.client(other).phone == "010-9876-5432" and db.client(other).email == "madina@gmail.com"
+    assert res.unmatched == ["UNKNOWN PERSON"]

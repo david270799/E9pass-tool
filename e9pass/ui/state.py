@@ -7,6 +7,10 @@ from PySide6.QtCore import QObject, Signal
 from ..db import Database
 
 
+def current_period() -> str:
+    return date.today().strftime("%Y-%m")
+
+
 def shift_period(period: str, months: int) -> str:
     y, m = map(int, period.split("-"))
     m += months
@@ -26,8 +30,18 @@ class AppState(QObject):
     def __init__(self, db: Database):
         super().__init__()
         self.db = db
-        periods = db.periods()
-        self.period = periods[0] if periods else date.today().strftime("%Y-%m")
+        # месяц по дате Windows; при смене месяца переключается сам (см. MainWindow)
+        self.today_period = current_period()
+        self.period = self.today_period
+
+    def follow_calendar(self):
+        """Наступил новый месяц: если пользователь смотрел «текущий» месяц — перейти на новый."""
+        now = current_period()
+        if now != self.today_period:
+            was_current = self.period == self.today_period
+            self.today_period = now
+            if was_current:
+                self.set_period(now)
 
     def set_period(self, period: str):
         if period != self.period:

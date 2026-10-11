@@ -407,8 +407,29 @@ class FullDropOverlay(QWidget):
         super().__init__(parent)
         self.target = target
         self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.title, self.hint, self.ok = "", "", True
+        # Страховка: если перетаскивание отменили (Esc, увели за окно) и Qt не прислал «уход» —
+        # подсветка сама исчезает, когда перестают приходить движения.
+        from PySide6.QtCore import QTimer
+        self._watchdog = QTimer(self)
+        self._watchdog.setSingleShot(True)
+        self._watchdog.setInterval(700)
+        self._watchdog.timeout.connect(self._check_still_dragging)
         self.hide()
+
+    def _check_still_dragging(self):
+        from PySide6.QtGui import QCursor, QGuiApplication
+        inside = self.rect().contains(self.mapFromGlobal(QCursor.pos()))
+        buttons = QGuiApplication.mouseButtons()
+        if not inside or not (buttons & Qt.LeftButton):
+            self.hide()
+        else:
+            self._watchdog.start()
+
+    def hideEvent(self, e):
+        self._watchdog.stop()
+        super().hideEvent(e)
 
     def begin(self, mime) -> bool:
         spec = self.target()
@@ -425,6 +446,7 @@ class FullDropOverlay(QWidget):
         self.raise_()
         self.show()
         self.update()
+        self._watchdog.start()
         return True
 
     def paintEvent(self, _e):
@@ -453,14 +475,21 @@ class FullDropOverlay(QWidget):
 
     def dragEnterEvent(self, e):
         e.acceptProposedAction()
+        self._watchdog.start()
 
     def dragMoveEvent(self, e):
         e.acceptProposedAction()
+        self._watchdog.start()
 
     def dragLeaveEvent(self, e):
-        # уход курсора за пределы окна
-        from PySide6.QtGui import QCursor
-        if not self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+        # подсветка закрывает все окно, поэтому уход с нее = файл увели из программы
+        self.hide()
+
+    def mousePressEvent(self, e):
+        self.hide()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
             self.hide()
 
     def dropEvent(self, e):

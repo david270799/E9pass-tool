@@ -284,6 +284,10 @@ def set_client_fields(db: Database, client_id: int, **fields):
     """Ручная правка профиля: снимает предупреждения о заполненных полях."""
     if "full_name" in fields:
         fields["full_name"] = normalize_name(fields["full_name"].upper())
+    if fields.get("phone"):
+        fields["phone"] = normalize_phone(fields["phone"])
+    if fields.get("email"):
+        fields["email"] = fields["email"].strip().lower()
     db.update_client(client_id, **fields)
     client = db.client(client_id)
     resolved = {
@@ -559,7 +563,8 @@ def build_master(db: Database, client_id: int, progress: Progress = _noop) -> Ma
 # ====================================================================== экспорт
 
 REGISTRY_COLUMNS = [("№", 6), ("ФИО (заглавными)", 30), ("ФИО (строчными)", 30), ("Номер ARC", 18),
-                    ("Дата рождения", 14), ("Гражданство", 16), ("Адрес регистрации", 60)]
+                    ("Дата рождения", 14), ("Гражданство", 16), ("Адрес регистрации", 60),
+                    ("Телефон", 16), ("E-mail", 28)]
 
 
 def export_registry(clients: List[Client], out_path: Path) -> Path:
@@ -576,13 +581,81 @@ def export_registry(clients: List[Client], out_path: Path) -> Path:
         ws.column_dimensions[get_column_letter(i)].width = width
     for n, c in enumerate(clients, start=1):
         name = normalize_name(c.full_name)
-        ws.append([n, name.upper(), name.lower(), c.arc_number, c.birth_date, c.nationality, c.registered_address])
+        ws.append([n, name.upper(), name.lower(), c.arc_number, c.birth_date, c.nationality, c.registered_address,
+                   c.phone, c.email])
         for cell in ws[ws.max_row][1:]:
             cell.number_format = "@"
     ws.freeze_panes = "A2"
     out_path = Path(out_path)
     wb.save(out_path)
     return out_path
+
+
+_PHONE = re.compile(r"(?<!\d)(01[016789])[-.\s]?(\d{3,4})[-.\s]?(\d{4})(?!\d)")
+_EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+_ARC = re.compile(r"(?<!\d)(\d{6})\s*-?\s*([5-8]\d{6})(?!\d)")
+
+
+def normalize_phone(text: str) -> str:
+    m = _PHONE.search(text or "")
+    return f"{m.group(1)}-{m.group(2)}-{m.group(3)}" if m else (text or "").strip()
+
+
+@dataclass
+class RegistryImportResult:
+    updated: List[str] = field(default_factory=list)       # кому записали телефон/почту
+    unmatched: List[str] = field(default_factory=list)     # строки, для которых клиент не найден
+    rows: int = 0
+
+
+def import_registry_contacts(db: Database, path: Path, period: Optional[str] = None) -> RegistryImportResult:
+    """Excel с телефонами и почтой -> в профили клиентов.
+
+    Колонки могут быть в любом порядке и даже в одной ячейке: в каждой строке ищутся номер ARC
+    (иначе ФИО), телефон 010-…, e-mail. Сопоставление по ARC во всех периодах (свежий клиент
+    приоритетнее), без ARC — по ФИО в выбранном периоде.
+    """
+    from openpyxl import load_workbook
+
+    res = RegistryImportResult()
+    wb = load_workbook(Path(path), read_only=True, data_only=True)
+    clients_period = db.clients(period) if period else []
+    by_name = {normalize_name(c.full_name).lower(): c for c in clients_period if c.full_name}
+    for ws in wb.worksheets:
+        for row in ws.iter_rows(values_only=True):
+            cells = [str(v).strip() for v in row if v is not None and str(v).strip()]
+            if not cells:
+                continue
+            text = " | ".join(cells)
+            phone_m, email_m = _PHONE.search(text), _EMAIL.search(text)
+            if not phone_m and not email_m:
+                continue  # заголовок или строка без контактов
+            res.rows += 1
+            client = None
+            arc_m = _ARC.search(_PHONE.sub(" ", text))
+            if arc_m:
+                found = db.clients_by_arc(arc_m.group(1) + arc_m.group(2))
+                client = found[0] if found else None
+            if client is None:
+                # ФИО может стоять в любой ячейке или вместе с телефоном/почтой
+                low = " " + re.sub(r"\s+", " ", text.lower()) + " "
+                hits = [(len(n), c) for n, c in by_name.items() if f" {n} " in low or f"|{n}" in low.replace(" | ", "|")]
+                if hits:
+                    client = max(hits, key=lambda h: h[0])[1]
+            named = [c for c in cells if re.search(r"[A-Za-z가-힣А-Яа-я]", c) and "@" not in c]
+            label = arc_m.group(0) if arc_m else (named[0] if named else cells[0])
+            if client is None:
+                res.unmatched.append(label)
+                continue
+            updates = {}
+            if phone_m:
+                updates["phone"] = f"{phone_m.group(1)}-{phone_m.group(2)}-{phone_m.group(3)}"
+            if email_m:
+                updates["email"] = email_m.group(0).lower()
+            db.update_client(client.id, **updates)
+            res.updated.append(f"{client.full_name}: {updates.get('phone', '—')}, {updates.get('email', '—')}")
+    wb.close()
+    return res
 
 
 def export_client_zip(db: Database, client_id: int, out_dir: Path) -> Path:
