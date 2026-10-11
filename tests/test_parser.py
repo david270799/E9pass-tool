@@ -100,3 +100,9 @@ def test_name_hyphen_glued_in_one_line():
 def test_name_wrapped_without_hyphen():
     lines = ["성명 Name", "NGUYEN THI THANH", "HUONG", "국가/지역", "VIETNAM"]
     assert parse_card(lines).name == "NGUYEN THI THANH HUONG"
+
+
+def test_name_continuation_with_label_noise():
+    # реальный вывод OCR: подпись «Name» прочитана как «Yamc», в конце шум «7»
+    lines = ["성명 EGAMBERDIEV AZAM-", "Yamc AT PULATOVICH 7", "국가 지역 UZBEKISTAN"]
+    assert parse_card(lines).name == "EGAMBERDIEV AZAMAT PULATOVICH"

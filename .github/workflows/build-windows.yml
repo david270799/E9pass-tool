@@ -1,9 +1,8 @@
 name: Build Windows installer
 
+# Только ручной запуск (Actions → Build Windows installer → Run workflow):
+# установщик собирается, когда об этом попросили, а не при каждом push.
 on:
-  push:
-    branches: [main, "claude/**"]
-    paths-ignore: ["**.md"]
   workflow_dispatch:
 
 permissions:

@@ -187,7 +187,7 @@ class ClientPage(QWidget):
                     if r.code != BUILTIN_A4:
                         combo.addItem(r.doc_name, r.code)
                 combo.setCurrentIndex(max(0, combo.findData(d.doc_type)))
-                combo.setFixedWidth(210)
+                combo.setFixedWidth(200)
                 if not d.doc_type:
                     combo.setProperty("warn", True)
                 combo.currentIndexChanged.connect(lambda _i, cb=combo, doc=d: self.change_type(doc.id, cb.currentData()))
@@ -198,26 +198,52 @@ class ClientPage(QWidget):
             fname.setMinimumWidth(40)
             fname.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             line1 += [fname]
+            scan_status = None
+            actions = []
             if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK) and not d.is_processed_scan:
-                line1.append(button("Редактор скана", small=True,
-                                    on_click=lambda _=False, doc=d: self.open_scan_editor(doc)))
+                done = self._scan_result(docs, d.doc_type)
+                if done is not None:
+                    manual = done.detected_by == services.SCAN_MANUAL
+                    scan_status = "✓ скан обработан" if manual else "скан создан автоматически — проверьте"
+                    actions.append(button("Посмотреть скан", small=True,
+                                          on_click=lambda _=False, p=done.path: self.preview(p, "Обработанный скан")))
+                    actions.append(button("Изменить скан", small=True,
+                                          on_click=lambda _=False, doc=d: self.open_scan_editor(doc)))
+                else:
+                    actions.append(button("Редактор скана", primary=True, small=True,
+                                          on_click=lambda _=False, doc=d: self.open_scan_editor(doc)))
+            else:
+                actions.append(button("Посмотреть", small=True, on_click=lambda _=False, p=d.path: self.preview(p)))
             rm = button("✕", flat=True, on_click=lambda _=False, doc=d: self.delete_doc(doc))
             rm.setToolTip("Убрать документ из клиента")
+            rm.setFixedWidth(32)
             line1.append(rm)
             if locked:
                 tried = " и ".join(pdf_tools.birth_passwords(c.birth_date, c.arc_number)) or "дата рождения"
-                st = label(f"Пароль: {tried} не подошли — введите вручную", warn=True)
+                st = wrap_label(f"Пароль {tried} не подошел — введите вручную", warn=True)
+                st.setMinimumWidth(10)
                 pw = QLineEdit()
                 pw.setPlaceholderText("Пароль")
-                pw.setFixedWidth(140)
+                pw.setFixedWidth(120)
                 pw.setProperty("warn", True)
                 ok = button("Снять", primary=True, small=True)
                 ok.clicked.connect(lambda _=False, doc=d, e=pw: self.unlock(doc.id, e.text()))
                 pw.returnPressed.connect(lambda doc=d, e=pw: self.unlock(doc.id, e.text()))
-                line2 = hbox(st, None, pw, ok, spacing=8)
+                line2 = hbox(st, pw, ok, spacing=8)
             else:
-                line2 = hbox(label(d.detected_by or "", dim=True), None)
-            row.setLayout(vbox(hbox(*line1, spacing=10), line2, spacing=4, margins=(10, 6, 10, 8)))
+                info = vbox(spacing=2)
+                reason = label(d.detected_by or "", dim=True)
+                reason.setMinimumWidth(10)
+                info.addWidget(reason)
+                if scan_status:
+                    st = label(scan_status, warn=not scan_status.startswith("✓"))
+                    if scan_status.startswith("✓"):
+                        st.setStyleSheet(f"color:{theme.ACCENT};font-weight:700;")
+                    info.addWidget(st)
+                line2 = hbox(info, None, *actions, spacing=8)
+            row.setLayout(vbox(hbox(*line1, spacing=10), line2, spacing=6, margins=(10, 6, 10, 8)))
+            row.setToolTip("Двойной щелчок — посмотреть документ")
+            row.mouseDoubleClickEvent = lambda _e, p=d.path: self.preview(p)
             self.docs_lay.addWidget(row)
         self.docs_lay.addStretch(1)
 
@@ -371,11 +397,25 @@ class ClientPage(QWidget):
         self.state.data_changed.emit()
         QMessageBox.information(self, "Готово", f"Архив сохранен:\n{out}")
 
+    @staticmethod
+    def _scan_result(docs, doc_type):
+        """Обработанный скан для фото ID: лист А4 для лица, скан оборота для оборота."""
+        if doc_type == BUILTIN_FRONT:
+            return next((x for x in docs if x.doc_type == BUILTIN_A4), None)
+        return next((x for x in docs if x.doc_type == BUILTIN_BACK and x.is_processed_scan), None)
+
+    def preview(self, path, title=""):
+        from .preview import show_preview
+        show_preview(path, title or Path(path).name, self)
+
     def open_scan_editor(self, doc):
         from .scan_editor import ScanEditor
         dlg = ScanEditor(self.state, self.client_id, doc, self)
         if dlg.exec():
             self.state.data_changed.emit()
+            self.state.busy_changed.emit("Скан сохранен")
+            if dlg.result_path:
+                self.preview(dlg.result_path, "Скан сохранен — проверьте результат")
 
 
 def confirm_delete_client(parent, c) -> bool:

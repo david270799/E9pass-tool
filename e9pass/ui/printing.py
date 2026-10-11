@@ -75,6 +75,7 @@ class PrintPage(QWidget):
         self.seq.setResizeMode(QListView.Adjust)
         self.seq.setWordWrap(True)
         self.seq.setStyleSheet("QListWidget{border:none;background:transparent;} QListWidget::item{border:none;}")
+        self.seq.itemDoubleClicked.connect(self._preview_item)
         self.duplex = QCheckBox("Двусторонняя печать")
         self.mark = QCheckBox("Отметить клиентов как «Напечатано»")
         self.mark.setChecked(True)
@@ -118,6 +119,7 @@ class PrintPage(QWidget):
             chk.setData(Qt.UserRole, c.id)
             self.table.setItem(row, 0, chk)
             name = QTableWidgetItem(c.full_name + ("  ✓ напечатан" if c.printed else ""))
+            name.setToolTip(c.full_name)
             self.table.setItem(row, 1, name)
             id_missing = any(m.startswith("ID") for m in missing)
             doc_missing = [m for m in missing if not m.startswith("ID")]
@@ -175,6 +177,8 @@ class PrintPage(QWidget):
                 pages += count
                 kind = "ID · А4" if "_A4" in f.name else f"Договор · {count} стр."
                 it = QListWidgetItem(f"{n}. {kind}\n{c.full_name.split(' ')[0]}")
+                it.setData(Qt.UserRole, str(f))
+                it.setToolTip("Двойной щелчок — посмотреть")
                 pm = thumbnail(f, 136)
                 if pm:
                     it.setIcon(QIcon(pm))
@@ -184,6 +188,12 @@ class PrintPage(QWidget):
         ok = bool(ids) and not missing and pages > 0
         self.btn_print.setEnabled(ok)
         self.btn_save.setEnabled(ok)
+
+    def _preview_item(self, item):
+        from .preview import show_preview
+        path = item.data(Qt.UserRole)
+        if path:
+            show_preview(path, item.text().replace("\n", " · "), self)
 
     # ------------------------------------------------------------ вывод
 

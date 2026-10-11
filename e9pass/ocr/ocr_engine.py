@@ -44,33 +44,84 @@ def resize_max(img: Image.Image, target: int = 1800) -> Image.Image:
     return img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
 
 
-def find_card_corners(img: Image.Image) -> Optional[np.ndarray]:
-    """Углы карты на фото (tl, tr, br, bl) в пикселях исходного изображения или None."""
+def _quad_from_contour(cnt):
+    """4 угла контура: упрощение полигона, а для скругленных углов карты — описанный прямоугольник."""
     import cv2
 
-    arr = np.array(img)
+    peri = cv2.arcLength(cnt, True)
+    for eps in (0.02, 0.03, 0.04, 0.06, 0.08):
+        approx = cv2.approxPolyDP(cnt, eps * peri, True)
+        if len(approx) == 4 and cv2.isContourConvex(approx):
+            return approx.reshape(4, 2).astype("float32")
+    rect = cv2.minAreaRect(cnt)
+    box_area = rect[1][0] * rect[1][1]
+    if box_area > 0 and cv2.contourArea(cnt) / box_area > 0.85:  # контур почти прямоугольный
+        return cv2.boxPoints(rect).astype("float32")
+    return None
+
+
+def _card_score(pts, shape) -> float:
+    """Оценка кандидата (0 — не карта): крупнее, ближе к пропорции 1.586, не прилип к краям снимка."""
+    import cv2
+
+    h, w = shape[:2]
+    area = cv2.contourArea(pts.reshape(-1, 1, 2))
+    frac = area / (h * w)
+    if frac < 0.12 or frac > 0.95:
+        return 0.0
+    on_border = sum(1 for x, y in pts if x < 3 or y < 3 or x > w - 4 or y > h - 4)
+    if on_border >= 2:  # это рамка снимка или стол, а не карта
+        return 0.0
+    tl, tr, br, bl = order_corners(pts)
+    top, bottom = np.linalg.norm(tr - tl), np.linalg.norm(br - bl)
+    left, right = np.linalg.norm(bl - tl), np.linalg.norm(br - tr)
+    # у снятой сверху карты противоположные стороны почти равны; перекошенный контур — мусор
+    symmetry = min(top, bottom) / max(top, bottom, 1) * min(left, right) / max(left, right, 1)
+    if symmetry < 0.75:
+        return 0.0
+    ratio = max(top, bottom, left, right) and max(max(top, bottom), max(left, right)) / max(
+        1.0, min(max(top, bottom), max(left, right)))
+    if not 1.4 < ratio < 1.8:
+        return 0.0
+    return frac * symmetry ** 2 * (1 - abs(ratio - 1.586) / 0.4)
+
+
+def find_card_corners(img: Image.Image) -> Optional[np.ndarray]:
+    """Углы карты на фото (tl, tr, br, bl) в пикселях исходного изображения или None.
+
+    Кандидаты: контуры краев, области по насыщенности цвета (светлая карта на цветном
+    столе) и по яркости. Берется кандидат с лучшей оценкой.
+    """
+    import cv2
+
+    arr = np.array(img.convert("RGB"))
     h, w = arr.shape[:2]
     scale = 800 / max(h, w)
     small = cv2.resize(arr, (round(w * scale), round(h * scale)))
     gray = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY), (5, 5), 0)
-    edges = cv2.dilate(cv2.Canny(gray, 50, 150), np.ones((3, 3), np.uint8))
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    area_total = small.shape[0] * small.shape[1]
-    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
-        area = cv2.contourArea(c)
-        if area < 0.15 * area_total or area > 0.98 * area_total:
-            continue
-        approx = cv2.approxPolyDP(c, 0.02 * cv2.arcLength(c, True), True)
-        if len(approx) != 4:
-            continue
-        pts = order_corners(approx.reshape(4, 2).astype("float32") / scale)
-        tl, tr, br, bl = pts
-        width = max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl))
-        height = max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl))
-        ratio = max(width, height) / max(1.0, min(width, height))
-        if 1.3 < ratio < 1.9:  # у ID-карты соотношение сторон ~1.58
-            return pts
-    return None
+    sat = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_RGB2HSV)[:, :, 1], (7, 7), 0)
+    kernel = np.ones((9, 9), np.uint8)
+
+    masks = []
+    for lo, hi in ((50, 150), (20, 80)):
+        masks.append(cv2.dilate(cv2.Canny(gray, lo, hi), np.ones((3, 3), np.uint8)))
+    for channel in (sat, gray):
+        _, m = cv2.threshold(channel, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        for mm in (m, 255 - m):
+            mm = cv2.morphologyEx(mm, cv2.MORPH_CLOSE, kernel, iterations=2)
+            masks.append(cv2.morphologyEx(mm, cv2.MORPH_OPEN, kernel))
+
+    best, best_score = None, 0.0
+    for mask in masks:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for c in sorted(contours, key=cv2.contourArea, reverse=True)[:3]:
+            pts = _quad_from_contour(c)
+            if pts is None:
+                continue
+            score = _card_score(pts, small.shape)
+            if score > best_score:
+                best, best_score = pts, score
+    return order_corners(best / scale) if best is not None else None
 
 
 def order_corners(pts: np.ndarray) -> np.ndarray:

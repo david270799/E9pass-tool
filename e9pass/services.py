@@ -28,6 +28,7 @@ Progress = Callable[[str], None]
 log = logging.getLogger("e9pay")
 
 ORIGINALS, SCANS, LOCKED = "originals", "scans", "_locked"
+SCAN_MANUAL = "✓ обработан в редакторе скана"
 _FRONT_WARN_KEEP = ("номер", "ФИО", "страна", "пол")
 
 
@@ -246,7 +247,7 @@ def set_client_fields(db: Database, client_id: int, **fields):
 
 def make_id_a4(db: Database, client_id: int, front_path: Path, corners=None,
                filter_mode: str = scan.FILTER_CONTRAST, strength: int = 50, margin_mm: float = 10,
-               rotate: int = 0) -> Path:
+               rotate: int = 0, manual: bool = False) -> Path:
     client = db.client(client_id)
     out_dir = client.folder / SCANS
     png, pdf = scan.process_id_photo(Path(front_path), out_dir, corners, filter_mode, strength, margin_mm,
@@ -254,7 +255,7 @@ def make_id_a4(db: Database, client_id: int, front_path: Path, corners=None,
     for d in db.documents_of_type(client_id, BUILTIN_A4):
         db.delete_document(d.id)
     db.add_document(client_id, BUILTIN_A4, pdf, original_name=pdf.name, is_processed_scan=1,
-                    detected_by="создан из лица ID")
+                    detected_by=SCAN_MANUAL if manual else "создан автоматически из лица ID")
     return pdf
 
 
@@ -268,7 +269,7 @@ def save_back_scan(db: Database, client_id: int, back_path: Path, corners=None,
         if d.is_processed_scan:
             db.delete_document(d.id)
     db.add_document(client_id, BUILTIN_BACK, png, original_name=png.name, is_processed_scan=1,
-                    detected_by="редактор скана")
+                    detected_by=SCAN_MANUAL)
     return png
 
 

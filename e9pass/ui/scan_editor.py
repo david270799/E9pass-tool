@@ -82,6 +82,7 @@ class ScanEditor(QDialog):
         self.setWindowTitle("Редактор скана")
         self.resize(1300, 820)
         self.rotation = 0
+        self.result_path = None
         self.original = load_image(doc.path)
 
         client = state.db.client(client_id)
@@ -214,10 +215,11 @@ class ScanEditor(QDialog):
         corners = [(x / self.scale, y / self.scale) for x, y in self.view.corners()]
         db = self.state.db
         if self.is_front:
-            services.make_id_a4(db, self.client_id, self.doc.path, corners, self._filter(), self.strength.value(),
-                                self.margin.value(), rotate=self.rotation)
+            self.result_path = services.make_id_a4(db, self.client_id, self.doc.path, corners, self._filter(),
+                                                   self.strength.value(), self.margin.value(), rotate=self.rotation,
+                                                   manual=True)
         else:
-            services.save_back_scan(db, self.client_id, self.doc.path, corners, self._filter(),
-                                    self.strength.value(), rotate=self.rotation)
+            self.result_path = services.save_back_scan(db, self.client_id, self.doc.path, corners, self._filter(),
+                                                       self.strength.value(), rotate=self.rotation)
         db.update_client(self.client_id, master_pdf="")  # Master-PDF нужно пересобрать
         self.accept()

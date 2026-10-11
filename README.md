@@ -54,8 +54,8 @@
 **RAR-архивы** распаковываются встроенным в Windows 10/11 `tar.exe`. Если какой-то RAR не
 открывается, положите `UnRAR.exe` (бесплатный, с rarlab.com) в папку `tools` рядом с программой.
 
-**Сборка .exe** (если на рабочем ПК нельзя ставить Python): после `setup.bat` запустите
-`build_exe.bat` → папка `dist\E9pay` с `E9pay.exe`. Копируйте папку целиком.
+**Установщик .exe** собирается в GitHub Actions только вручную: Actions → «Build Windows installer» →
+Run workflow. Готовый файл появляется в Releases → `latest-build`. Локально: `build_exe.bat`.
 
 ## Проверка на вымышленных данных
 

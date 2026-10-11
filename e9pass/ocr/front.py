@@ -263,12 +263,18 @@ def _looks_like_country(word: str) -> bool:
 
 
 def _name_line(line: str, country: str) -> str:
-    """Строка, целиком состоящая из имени латиницей (без корейского, цифр и стран)."""
-    raw = line.strip()
-    if not re.fullmatch(r"[A-Z][A-Z\-' .,]*", raw):
+    """Имя латиницей из строки-продолжения: только слова ЗАГЛАВНЫМИ буквами.
+
+    Подпись «Name» под корейским «성명» OCR часто читает как мусор («Yamc AT PULATOVICH 7») —
+    слова со строчными буквами и цифры отбрасываются. Строки с корейским текстом — не имя.
+    """
+    if re.search(r"[가-힣]", line):
         return ""
-    cand = _latin_words(raw)
-    if not _is_name_like(cand) or cand == country or _looks_like_country(cand):
+    words = re.findall(r"(?<![A-Za-z])[A-Z][A-Z'\-]*(?![A-Za-z])", line)
+    cand = " ".join(words)
+    if len(cand.replace(" ", "")) < 2 or not _is_name_like(cand):
+        return ""
+    if cand == country or _looks_like_country(cand):
         return ""
     return cand
 
