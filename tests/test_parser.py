@@ -84,3 +84,19 @@ def test_visa_with_subtype():
 def test_name_label_ocr_typo_is_not_a_name():
     d = parse_card(["성명 Namne", "BATBAYAR GANBOLD", "MONGOLIA", "910722-5345678"])
     assert d.name == "BATBAYAR GANBOLD"
+
+
+def test_name_wrapped_with_hyphen_is_joined():
+    lines = ["성명 Name", "EGAMBERDIEV AZAM-", "AT PULATOVICH", "국가/지역 Country/Region", "UZBEKISTAN"]
+    assert parse_card(lines).name == "EGAMBERDIEV AZAMAT PULATOVICH"
+
+
+def test_name_hyphen_glued_in_one_line():
+    from e9pass.ocr.front import normalize_name
+    assert normalize_name("EGAMBERDIEV AZAM- AT PULATOVICH") == "EGAMBERDIEV AZAMAT PULATOVICH"
+    assert normalize_name("AL-RASHID OMAR") == "AL-RASHID OMAR"
+
+
+def test_name_wrapped_without_hyphen():
+    lines = ["성명 Name", "NGUYEN THI THANH", "HUONG", "국가/지역", "VIETNAM"]
+    assert parse_card(lines).name == "NGUYEN THI THANH HUONG"

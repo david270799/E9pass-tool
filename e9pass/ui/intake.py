@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import List, Optional
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QFrame, QGridLayout, QLabel, QListWidget, QListWidgetItem,
+from PySide6.QtWidgets import (QFrame, QGridLayout, QLabel, QListWidget, QListWidgetItem,
                                QMessageBox, QWidget)
 
 from .. import services
 from ..archive import ARCHIVE_EXTENSIONS
 from ..db import BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT
-from .widgets import (DropZone, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
+from . import theme
+from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
                       thumbnail, vbox, wrap_label)
 
 PHOTO_TYPES = [(BUILTIN_FRONT, "ID лицо"), (BUILTIN_BACK, "ID оборот"), (BUILTIN_BANK, "통장사본"),
@@ -85,11 +86,19 @@ class IntakePage(QWidget):
         self.running = True
         item.status = "обработка"
         self._render_list()
+        if self.list.currentRow() == self.queue.index(item):
+            self.show_item(self.list.currentRow())
         done = sum(1 for q in self.queue if q.status in ("готово", "ошибка"))
         total = len(self.queue)
 
         def progress(msg):
             item.detail = msg
+            bar = getattr(self, "live_bar", None)
+            if bar is not None and self.list.currentRow() == self.queue.index(item):
+                try:
+                    bar.set_text(msg)
+                except RuntimeError:  # виджет уже удален
+                    self.live_bar = None
             text = f"{done + 1} / {total} · {item.archive.name} · {msg}"
             self.on_status(text, done, total)
             self.state.busy_changed.emit(f"Приемка: {text}")
@@ -155,11 +164,22 @@ class IntakePage(QWidget):
         clear_layout(self.detail_lay)
         self.detail_lay.setContentsMargins(0, 0, 0, 0)
         if not q.result or not q.result.client_id:
-            text = q.detail if q.status == "ошибка" else f"{q.status}… {q.detail}"
-            m = wrap_label(f"{q.archive.name}\n\n{text}", muted=q.status != "ошибка", warn=q.status == "ошибка")
-            m.setAlignment(Qt.AlignCenter)
+            self.detail_lay.setContentsMargins(40, 40, 40, 40)
             self.detail_lay.addStretch(1)
-            self.detail_lay.addWidget(m)
+            if q.status == "обработка":
+                bar = BusyBar()
+                bar.start(f"Обрабатываю {q.archive.name}", q.detail or "загрузка модели распознавания…")
+                self.live_bar = bar
+                self.detail_lay.addWidget(bar)
+                self.detail_lay.addWidget(wrap_label("Распаковка → определение фото → OCR лица, оборота и 통장 → "
+                                                     "лист А4. Обычно до минуты на архив.", dim=True))
+            else:
+                text = q.detail if q.status == "ошибка" else f"{q.status}… {q.detail}"
+                m = wrap_label(f"{q.archive.name}\n\n{text}", muted=q.status != "ошибка", warn=q.status == "ошибка")
+                m.setAlignment(Qt.AlignCenter)
+                self.detail_lay.addWidget(m)
+                if q.status == "ошибка":
+                    self.detail_lay.addLayout(hbox(None, button("Повторить", on_click=lambda: self.retry(row)), None))
             self.detail_lay.addStretch(1)
             return
         db = self.state.db
@@ -197,7 +217,7 @@ class IntakePage(QWidget):
             thumb.setAlignment(Qt.AlignCenter)
             thumb.setCursor(Qt.PointingHandCursor)
             thumb.mousePressEvent = lambda _e, p=d.path: open_path(p)
-            combo = QComboBox()
+            combo = NoWheelComboBox()
             for code, text in PHOTO_TYPES:
                 combo.addItem(text, code)
             idx = next((i for i, (c, _) in enumerate(PHOTO_TYPES) if c == d.doc_type), 3)
@@ -228,13 +248,35 @@ class IntakePage(QWidget):
         reread.setToolTip("Если вы поменяли тип фото — заново распознать лицо, оборот и 통장")
         open_card = button("Открыть карточку", primary=True,
                            on_click=lambda: self.state.open_client.emit(client.id))
-        hint = label("Если фото не распозналось — выберите тип вручную. Данные можно поправить в карточке.",
-                     dim=True)
+        hint = wrap_label("Фото не распозналось — выберите тип вручную. Данные правятся в карточке.", dim=True)
+        hint.setMinimumWidth(10)
         footer = QFrame()
         footer.setObjectName("IntakeFooter")
-        footer.setLayout(hbox(hint, None, reread, open_card, margins=(18, 12, 18, 14)))
+        delete_b = button("Удалить клиента", on_click=lambda: self.delete_client(client.id, row))
+        delete_b.setStyleSheet(f"QPushButton{{border-color:{theme.ACCENT};color:{theme.ACCENT};}}")
+        delete_b.setToolTip("Удалить клиента со всеми файлами; архив можно загрузить заново")
+        footer.setLayout(hbox(hint, None, delete_b, reread, open_card, margins=(18, 12, 18, 14)))
         footer.setStyleSheet("QFrame#IntakeFooter{border-top:1px solid rgba(255,255,255,0.10);}")
         self.detail_lay.addWidget(footer)
+
+    def delete_client(self, client_id: int, row: int):
+        from .client import confirm_delete_client
+        c = self.state.db.client(client_id)
+        if not c or not confirm_delete_client(self, c):
+            return
+        services.delete_client_everything(self.state.db, client_id)
+        q = self.queue[row]
+        q.status, q.detail, q.result = "ошибка", "клиент удален — можно загрузить заново («Повторить»)", None
+        self._render_list()
+        self.show_item(row)
+        self.state.data_changed.emit()
+
+    def retry(self, row: int):
+        q = self.queue[row]
+        q.status, q.detail, q.result = "в очереди", "", None
+        self._render_list()
+        self.show_item(row)
+        self._next()
 
     def reread(self, client_id: int, row: int):
         self.state.busy_changed.emit("Перечитываю данные…")

@@ -10,9 +10,46 @@ import pymupdf
 from .ocr.ocr_engine import IMAGE_EXTENSIONS
 
 
+KNOWN_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic"}
+
+
+def sniff_extension(path: Path) -> str:
+    """Тип файла по содержимому (файлы с сайтов часто без расширения): '.pdf', '.jpg', … или ''."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(1024)
+    except OSError:
+        return ""
+    if b"%PDF-" in head:
+        return ".pdf"
+    if head.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if head.startswith(b"\x89PNG"):
+        return ".png"
+    if head[:2] == b"BM":
+        return ".bmp"
+    if head[:4] in (b"II*\x00", b"MM\x00*"):
+        return ".tif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return ".webp"
+    if head[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1", b"ftyphevc"):
+        return ".heic"
+    return ""
+
+
+def real_extension(path: Path) -> str:
+    """Расширение по содержимому, а если не распознано — по имени."""
+    return sniff_extension(path) or Path(path).suffix.lower()
+
+
 def birth_passwords(birth_yymmdd: str, arc: str = "") -> List[str]:
-    """YYMMDD и YYYYMMDD из даты рождения (век — по 7-й цифре ARC, иначе по году)."""
+    """YYMMDD и YYYYMMDD из даты рождения (век — по 7-й цифре ARC, иначе по году).
+
+    Если дата рождения не заполнена, берется из первых 6 цифр номера ARC.
+    """
     d = "".join(ch for ch in birth_yymmdd if ch.isdigit())
+    if len(d) != 6:
+        d = "".join(ch for ch in arc if ch.isdigit())[:6]
     if len(d) != 6:
         return []
     digits = "".join(ch for ch in arc if ch.isdigit())
@@ -23,12 +60,24 @@ def birth_passwords(birth_yymmdd: str, arc: str = "") -> List[str]:
     return [d, century + d]
 
 
+def password_candidates(birth_yymmdd: str, arc: str = "") -> List[str]:
+    """Пароли, которые пробуем автоматически: дата рождения, затем варианты номера ARC."""
+    out = birth_passwords(birth_yymmdd, arc)
+    digits = "".join(ch for ch in arc if ch.isdigit())
+    if len(digits) == 13:
+        out += [digits, f"{digits[:6]}-{digits[6:]}", digits[6:]]
+    seen = set()
+    return [p for p in out if not (p in seen or seen.add(p))]
+
+
 def is_encrypted(path: Path) -> bool:
     try:
         with pikepdf.open(path):
             return False
     except pikepdf.PasswordError:
         return True
+    except Exception:  # noqa: BLE001 — не PDF или поврежден
+        return False
 
 
 def try_unlock(src: Path, dst: Path, passwords: Iterable[str]) -> Tuple[bool, Optional[str]]:
@@ -78,7 +127,7 @@ def pdf_first_page_image(path: Path, zoom: float = 2.0):
 
 def page_count(path: Path) -> int:
     path = Path(path)
-    if path.suffix.lower() in IMAGE_EXTENSIONS:
+    if real_extension(path) in IMAGE_EXTENSIONS:
         return 1
     try:
         with pymupdf.open(path) as doc:
@@ -90,7 +139,7 @@ def page_count(path: Path) -> int:
 def append_file(out: pymupdf.Document, path: Path):
     """Добавляет PDF или картинку (на страницу А4 по размеру) в конец документа."""
     path = Path(path)
-    if path.suffix.lower() == ".pdf":
+    if real_extension(path) == ".pdf":
         with pymupdf.open(path) as src:
             out.insert_pdf(src)
         return

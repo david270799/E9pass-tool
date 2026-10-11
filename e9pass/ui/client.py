@@ -3,13 +3,13 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGridLayout, QLabel, QLineEdit, QMessageBox,
+from PySide6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QLabel, QLineEdit, QMessageBox,
                                QScrollArea, QSizePolicy, QWidget)
 
 from .. import pdf_tools, services
 from ..db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_FRONT
 from . import theme
-from .widgets import (DropZone, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
+from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
                       thumbnail, type_tag, vbox, wrap_label)
 
 DOC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic", ".bmp", ".tif", ".tiff", ".webp"}
@@ -30,8 +30,11 @@ class ClientPage(QWidget):
         self.btn_folder = button("Открыть папку", on_click=lambda: open_path(self.client().folder))
         self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
         self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
+        self.btn_delete = button("Удалить клиента", on_click=self.delete_client)
+        self.btn_delete.setStyleSheet(f"QPushButton{{border-color:{theme.ACCENT};color:{theme.ACCENT};}}")
+        self.btn_delete.setToolTip("Удалить клиента и все его файлы из программы")
         header = hbox(vbox(hbox(back, self.crumb, None, spacing=4), hbox(self.name, self.badge_host, None, spacing=14),
-                           spacing=2), None, self.btn_folder, self.btn_zip, self.btn_master)
+                           spacing=2), None, self.btn_delete, self.btn_folder, self.btn_zip, self.btn_master)
 
         # --- профиль
         self.profile = frame("panel")
@@ -49,9 +52,12 @@ class ClientPage(QWidget):
         drop = DropZone("Перетащите договоры, страховки, справки", "PDF или фото · тип определится сам",
                         DOC_EXTENSIONS, "Документы (*.pdf *.jpg *.jpeg *.png *.heic)", compact=True)
         drop.files_dropped.connect(self.add_files)
-        self.docs_panel.setLayout(vbox(hbox(self.docs_title, None,
-                                            label("Тип: маска имени файла или слова OCR", dim=True)),
-                                       docs_scroll, drop, spacing=10, margins=(18, 16, 18, 16)))
+        self.drop = drop
+        self.btn_recheck = button("Определить заново", small=True, on_click=self.recheck)
+        self.btn_recheck.setToolTip("Еще раз: тип файла, пароль (дата рождения), тип документа по маске и OCR")
+        self.busy = BusyBar()
+        self.docs_panel.setLayout(vbox(hbox(self.docs_title, None, self.btn_recheck),
+                                       self.busy, docs_scroll, drop, spacing=10, margins=(18, 16, 18, 16)))
         # --- очередь Master-PDF
         self.queue_panel = frame("panel")
         self.queue_panel.setFixedWidth(330)
@@ -155,8 +161,7 @@ class ClientPage(QWidget):
         if c.warnings:
             lay.addWidget(wrap_label("⚠ " + "; ".join(c.warnings), warn=True))
         lay.addStretch(1)
-        lay.addLayout(hbox(button("Удалить клиента", small=True, on_click=self.delete_client), None,
-                           button("Сохранить", primary=True, on_click=self.save_profile)))
+        lay.addLayout(hbox(None, button("Сохранить", primary=True, on_click=self.save_profile)))
         self.profile.setLayout(lay)
 
     def _render_docs(self, c, docs):
@@ -176,20 +181,20 @@ class ClientPage(QWidget):
                 line1.append(type_tag(names.get(d.doc_type, d.doc_type) + (" · скан" if d.is_processed_scan and
                                                                           d.doc_type != BUILTIN_A4 else "")))
             else:
-                combo = QComboBox()
-                combo.addItem("Не определен — выберите", "")
+                combo = NoWheelComboBox()
+                combo.addItem("— не определен —", "")
                 for r in rules:
                     if r.code != BUILTIN_A4:
                         combo.addItem(r.doc_name, r.code)
                 combo.setCurrentIndex(max(0, combo.findData(d.doc_type)))
-                combo.setFixedWidth(200)
+                combo.setFixedWidth(210)
                 if not d.doc_type:
                     combo.setProperty("warn", True)
                 combo.currentIndexChanged.connect(lambda _i, cb=combo, doc=d: self.change_type(doc.id, cb.currentData()))
                 line1.append(combo)
             fname = button(d.path.name, flat=True, on_click=lambda _=False, p=d.path: open_path(p))
             fname.setStyleSheet("text-align:left;color:#E6E6E6;font-weight:500;")
-            fname.setToolTip(f"Открыть файл: {d.path.name}")
+            fname.setToolTip(f"Открыть файл: {d.path.name}\nИсходное имя: {d.original_name}")
             fname.setMinimumWidth(40)
             fname.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             line1 += [fname]
@@ -284,19 +289,41 @@ class ClientPage(QWidget):
 
     def delete_client(self):
         c = self.client()
-        if QMessageBox.question(self, "Удалить клиента", f"Удалить {c.full_name} из периода {c.batch_period}?\n"
-                                "Папка с файлами на диске останется.") == QMessageBox.Yes:
-            self.state.db.delete_client(c.id)
+        if confirm_delete_client(self, c):
+            services.delete_client_everything(self.state.db, c.id)
+            self.client_id = None
             self.state.data_changed.emit()
             self.state.navigate.emit("dashboard")
 
+    def _busy(self, title, on_progress_text=""):
+        self.busy.start(title, on_progress_text)
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.drop):
+            w.setEnabled(False)
+
+    def _idle(self):
+        self.busy.stop()
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.drop):
+            w.setEnabled(True)
+        self.state.busy_changed.emit("")
+
+    def _progress(self, text):
+        self.busy.set_text(text)
+        self.state.busy_changed.emit(text)
+
+    def recheck(self):
+        self._busy("Определяю документы заново…")
+        run_task(services.recheck_documents, self.state.db, self.client_id, on_progress=self._progress,
+                 on_done=lambda n: (self._idle(), self.state.data_changed.emit(),
+                                    QMessageBox.information(self, "Готово", f"Определено документов: {n}")),
+                 on_fail=lambda err: (self._idle(), QMessageBox.warning(self, "Ошибка", err)))
+
     def add_files(self, files):
         cid = self.client_id
-        self.state.busy_changed.emit("Добавляю документы…")
-        run_task(services.add_documents, self.state.db, cid, files,
-                 on_progress=self.state.busy_changed.emit,
-                 on_done=lambda _r: (self.state.busy_changed.emit(""), self.state.data_changed.emit()),
-                 on_fail=lambda err: (self.state.busy_changed.emit(""), QMessageBox.warning(self, "Ошибка", err)))
+        self._busy(f"Добавляю документы ({len(files)})…", "загрузка модели распознавания")
+        run_task(services.add_documents, self.state.db, cid, files, on_progress=self._progress,
+                 on_done=lambda _r: (self._idle(), self.state.data_changed.emit()),
+                 on_fail=lambda err: (self._idle(), self.state.data_changed.emit(),
+                                      QMessageBox.warning(self, "Ошибка", err)))
 
     def unlock(self, doc_id, password):
         if not password:
@@ -307,14 +334,26 @@ class ClientPage(QWidget):
             QMessageBox.warning(self, "Пароль не подошел", "Этот пароль не подходит к файлу.")
 
     def build_master(self):
-        res = services.build_master(self.state.db, self.client_id)
+        self._busy("Собираю Master-PDF…", "проверяю пароли")
+        run_task(services.build_master, self.state.db, self.client_id, on_progress=self._progress,
+                 on_done=self._master_done,
+                 on_fail=lambda err: (self._idle(), QMessageBox.warning(self, "Ошибка", err)))
+
+    def _master_done(self, res):
+        self._idle()
         self.state.data_changed.emit()
+        problems = ""
+        if res.locked:
+            problems += "\n\n⚠ Не подошел пароль (введите вручную в списке документов):\n• " + "\n• ".join(res.locked)
+        if res.unknown:
+            problems += "\n\n⚠ Тип не определен — эти файлы НЕ попали в Master-PDF:\n• " + "\n• ".join(res.unknown)
         if not res.path:
-            QMessageBox.information(self, "Master-PDF", "Нет документов для Master-PDF.")
+            QMessageBox.information(self, "Master-PDF", "Нет документов для Master-PDF." + problems)
             return
         msg = f"Собран: {res.path.name}\n\nВключено: {', '.join(res.included)}"
         if res.skipped:
             msg += f"\nПропущено (нет у клиента): {', '.join(res.skipped)}"
+        msg += problems
         box = QMessageBox(self)
         box.setWindowTitle("Master-PDF")
         box.setText(msg)
@@ -337,3 +376,13 @@ class ClientPage(QWidget):
         dlg = ScanEditor(self.state, self.client_id, doc, self)
         if dlg.exec():
             self.state.data_changed.emit()
+
+
+def confirm_delete_client(parent, c) -> bool:
+    return QMessageBox.question(
+        parent, "Удалить клиента",
+        f"Удалить {c.full_name or 'клиента'} ({c.arc_number or 'без ARC'}) из периода {c.batch_period}?\n\n"
+        "Будут удалены все данные клиента в программе и его папка с файлами "
+        "(оригиналы, сканы, Master-PDF). Отменить нельзя.\n\n"
+        "Архив, из которого он был загружен, не трогается — его можно загрузить заново.",
+        QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes

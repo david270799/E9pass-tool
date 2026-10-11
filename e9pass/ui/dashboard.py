@@ -22,7 +22,12 @@ class ClientCard(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         name = label(client.full_name or "(без имени)")
         name.setStyleSheet("font-weight:700;font-size:15px;")
-        top = hbox(name, None, badge(client.status))
+        rm = button("✕", flat=True, on_click=self.delete)
+        rm.setFixedSize(28, 28)
+        rm.setToolTip("Удалить клиента со всеми данными")
+        rm.setStyleSheet(f"QPushButton{{color:{theme.DIM};font-size:14px;min-height:0;padding:0;}}"
+                         f"QPushButton:hover{{color:{theme.ACCENT};}}")
+        top = hbox(name, None, badge(client.status), rm, spacing=8)
         arc = label(client.arc_number or "—", mono=True)
         info = label(" · ".join(x for x in (client.nationality, client.birth_date) if x), muted=True)
         addr = label(client.registered_address or "Адрес не распознан")
@@ -51,6 +56,13 @@ class ClientCard(QFrame):
 
     def mouseReleaseEvent(self, e):
         self.state.open_client.emit(self.client_id)
+
+    def delete(self):
+        from .client import confirm_delete_client
+        c = self.state.db.client(self.client_id)
+        if c and confirm_delete_client(self, c):
+            services.delete_client_everything(self.state.db, c.id)
+            self.state.data_changed.emit()
 
 
 class DashboardPage(QWidget):
@@ -133,8 +145,8 @@ class DashboardPage(QWidget):
         self.empty.setAlignment(Qt.AlignCenter)
 
         zip_all = button("Экспорт в ZIP (все клиенты)", on_click=self.export_zip_all)
-        footer = hbox(label("Реестр выгружает только: №, ФИО, Номер ARC, Дата рождения, Гражданство, "
-                            "Адрес регистрации", dim=True), None, zip_all)
+        footer = hbox(label("Реестр: №, ФИО (заглавными и строчными), Номер ARC, Дата рождения, "
+                            "Гражданство, Адрес регистрации — без банковских данных", dim=True), None, zip_all)
 
         root = vbox(hbox(switcher, self.month_label, None, self.search, export_b, spacing=14),
                     tiles, self.import_bar, filters, self.empty, scroll, footer,

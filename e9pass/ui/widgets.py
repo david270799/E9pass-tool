@@ -6,8 +6,8 @@ from typing import Callable, Iterable, List, Optional
 
 from PySide6.QtCore import QObject, QPoint, QRect, QRunnable, QSize, Qt, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QImage, QPixmap
-from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QProgressBar,
+                               QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from . import theme
 
@@ -228,6 +228,50 @@ def thumbnail(path, size: int = 120) -> Optional[QPixmap]:
         return pil_to_pixmap(img)
     except Exception:  # noqa: BLE001
         return None
+
+
+class NoWheelComboBox(QComboBox):
+    """Выпадающий список, который не меняет значение при прокрутке колесом мыши над ним."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, e):
+        e.ignore()  # прокрутку получает список документов, а не этот комбобокс
+
+
+class BusyBar(QFrame):
+    """Заметная полоса «идет обработка» с бегущим индикатором и текстом шага."""
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("BusyBar")
+        self.setStyleSheet(f"QFrame#BusyBar{{border:1.5px solid {theme.ACCENT};border-radius:10px;"
+                           f"background:#1d1a0c;}}")
+        self.title = QLabel("Идет обработка…")
+        self.title.setStyleSheet(f"color:{theme.ACCENT};font-weight:800;")
+        self.text = QLabel("")
+        self.text.setStyleSheet(f"color:{theme.TEXT};")
+        self.text.setMinimumWidth(10)
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 0)  # бегущая полоса
+        self.bar.setTextVisible(False)
+        self.bar.setFixedHeight(6)
+        self.setLayout(vbox(hbox(self.title, self.text, None, spacing=10), self.bar, spacing=6,
+                            margins=(14, 10, 14, 10)))
+        self.hide()
+
+    def start(self, title: str, text: str = ""):
+        self.title.setText(title)
+        self.text.setText(text)
+        self.show()
+
+    def set_text(self, text: str):
+        self.text.setText(text)
+
+    def stop(self):
+        self.hide()
 
 
 class DropZone(QFrame):

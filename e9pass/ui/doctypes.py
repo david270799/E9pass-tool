@@ -158,7 +158,9 @@ class DocTypesPage(QWidget):
         r.print_step3 = int(self.f_print.isChecked())
         self.state.db.save_rule(r)
         self.refresh(select_id=r.id)
+        found = services.recheck_all_unknown(self.state.db)
         self.state.data_changed.emit()
+        self.test_result.setText(f"✓ Сохранено. Нераспознанных документов определено заново: {found}")
 
     def add_rule(self):
         rules = self.state.db.rules()

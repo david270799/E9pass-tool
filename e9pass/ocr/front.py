@@ -248,6 +248,42 @@ def _is_name_like(text: str) -> bool:
     return True
 
 
+def normalize_name(name: str) -> str:
+    """Склеивает перенос строки с дефисом: «AZAM- AT PULATOVICH» -> «AZAMAT PULATOVICH».
+
+    Настоящий дефис в имени (AL-RASHID) пишется без пробела и не трогается.
+    """
+    name = re.sub(r"([A-Z])\s*-\s+([A-Z])", r"\1\2", name.strip())
+    name = re.sub(r"-+$", "", name).strip()
+    return re.sub(r"\s+", " ", name)
+
+
+def _looks_like_country(word: str) -> bool:
+    return any(SequenceMatcher(None, word, c).ratio() >= 0.8 for c in COUNTRIES)
+
+
+def _name_line(line: str, country: str) -> str:
+    """Строка, целиком состоящая из имени латиницей (без корейского, цифр и стран)."""
+    raw = line.strip()
+    if not re.fullmatch(r"[A-Z][A-Z\-' .,]*", raw):
+        return ""
+    cand = _latin_words(raw)
+    if not _is_name_like(cand) or cand == country or _looks_like_country(cand):
+        return ""
+    return cand
+
+
+def _with_continuation(first: str, rest_lines: List[str], country: str) -> str:
+    """Длинное имя переносится на следующую строку карты — присоединяем ее."""
+    name = first
+    for nxt in rest_lines[:2]:
+        cont = _name_line(nxt, country)
+        if not cont:
+            break
+        name = f"{name[:-1]}{cont}" if name.endswith("-") else f"{name} {cont}"
+    return normalize_name(name)
+
+
 def find_name(lines: List[str], country: str = "") -> str:
     # 1) Подпись "성명" / "Name": имя в той же строке после неё или в следующей.
     for i, line in enumerate(lines):
@@ -258,11 +294,11 @@ def find_name(lines: List[str], country: str = "") -> str:
         rest = " ".join(w for w in _latin_words(m.group(2)).split()
                         if SequenceMatcher(None, w, "NAME").ratio() < 0.6)
         if _is_name_like(rest) and rest != country:
-            return rest
-        for nxt in lines[i + 1:i + 3]:
-            cand = _latin_words(nxt)
-            if _is_name_like(cand) and cand != country and nxt.strip().upper() == nxt.strip():
-                return cand
+            return _with_continuation(rest, lines[i + 1:], country)
+        for j in range(i + 1, min(i + 3, len(lines))):
+            cand = _name_line(lines[j], country)
+            if cand:
+                return _with_continuation(cand, lines[j + 1:], country)
     # 2) Самая длинная строка, похожая на имя.
     best = ""
     for line in lines:
@@ -272,7 +308,7 @@ def find_name(lines: List[str], country: str = "") -> str:
         cand = _latin_words(raw)
         if _is_name_like(cand) and cand != country and len(cand) > len(best):
             best = cand
-    return best
+    return normalize_name(best)
 
 
 # ---------------------------------------------------------------- пол

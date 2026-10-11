@@ -38,7 +38,8 @@ def run() -> int:
         if card.reg_no != "950101-5123456":
             raise RuntimeError(f"OCR вернул неверный номер: {card.reg_no!r}; строки: {ocr_lines}")
 
-        import pikepdf  # noqa: F401
+        import pikepdf
+        log(f"pikepdf {pikepdf.__version__}")
         import pymupdf
         from . import scan, services
         from .db import Database

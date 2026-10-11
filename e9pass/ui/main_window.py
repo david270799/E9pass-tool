@@ -121,6 +121,10 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    import logging
+    logging.basicConfig(filename=str(config.data_dir() / "e9pay.log"), level=logging.INFO, encoding="utf-8",
+                        format="%(asctime)s %(levelname)s %(message)s")
+    logging.getLogger("e9pay").info("запуск E9pay")
     app = QApplication(sys.argv)
     app.setApplicationName("E9pay")
     app.setStyleSheet(theme.QSS)
