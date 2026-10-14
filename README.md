@@ -72,8 +72,8 @@
 база `e9pass.sqlite3` и папки `periods\<месяц>\<клиент>\`. Другую папку можно задать
 переменной окружения `E9PASS_HOME`.
 
-**RAR-архивы** распаковываются встроенным в Windows 10/11 `tar.exe`. Если какой-то RAR не
-открывается, положите `UnRAR.exe` (бесплатный, с rarlab.com) в папку `tools` рядом с программой.
+**RAR-архивы** (RAR4, RAR5, solid) распаковываются 7-Zip из папки `tools` — он входит в установщик.
+Дальше по очереди пробуются `tools\UnRAR.exe`, установленный 7-Zip и встроенный в Windows `tar.exe`.
 
 **Установщик .exe** собирается в GitHub Actions только вручную: Actions → «Build Windows installer» →
 Run workflow. Готовый файл появляется в Releases → `latest-build`. Локально: `build_exe.bat`.

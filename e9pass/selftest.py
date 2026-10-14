@@ -59,6 +59,19 @@ def run() -> int:
         log("Передача .e9pay с паролем: ок")
         _ = scan.FILTER_CLEAN
 
+        from . import archive
+        rar = config.app_dir() / "selftest" / "rar5-solid.rar"
+        if not rar.exists():
+            rar = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "rar5-solid.rar"
+        if getattr(sys, "frozen", False) and not (config.app_dir() / "tools" / "7z.exe").exists():
+            raise RuntimeError("нет tools/7z.exe для RAR")
+        got = []
+        (home / "rar").mkdir()
+        archive._extract_rar(rar, home / "rar", got)
+        if len(got) != 2:
+            raise RuntimeError(f"RAR5 solid не распакован: {got}")
+        log(f"RAR: ок ({archive._rar_commands(rar)[0][0]})")
+
         from PySide6.QtWidgets import QApplication
         from .ui import theme
         from .ui.main_window import MainWindow

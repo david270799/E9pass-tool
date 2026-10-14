@@ -52,6 +52,12 @@ jobs:
           Copy-Item -Recurse extension dist/E9pay/extension
           New-Item -ItemType Directory -Force dist/E9pay/selftest | Out-Null
           Copy-Item tests/fixtures/sample_front.jpg dist/E9pay/selftest/
+          Copy-Item tests/fixtures/rar5-solid.rar dist/E9pay/selftest/
+          # 7-Zip (LGPL + unRAR) распаковывает RAR4/RAR5/solid; tar.exe в Windows 10 RAR5 не читает
+          $sevenZip = "$env:ProgramFiles\7-Zip"
+          if (-not (Test-Path "$sevenZip\7z.exe")) { choco install 7zip -y --no-progress }
+          New-Item -ItemType Directory -Force dist/E9pay/tools | Out-Null
+          Copy-Item "$sevenZip\7z.exe", "$sevenZip\7z.dll", "$sevenZip\License.txt" dist/E9pay/tools/
           "{0:N0} MB" -f ((Get-ChildItem dist/E9pay -Recurse | Measure-Object Length -Sum).Sum / 1MB)
 
       - name: Self-test the built exe
