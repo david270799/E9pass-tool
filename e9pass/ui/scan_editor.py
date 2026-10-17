@@ -4,7 +4,7 @@ from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QGraphicsEllipseItem, QGraphicsItem,
                                QGraphicsPixmapItem, QGraphicsPolygonItem, QGraphicsScene, QGraphicsView,
-                               QLabel, QMessageBox, QPushButton, QSlider)
+                               QLabel, QLineEdit, QMessageBox, QPushButton, QSlider)
 
 from .. import scan, services
 from ..db import BUILTIN_FRONT
@@ -16,12 +16,15 @@ WORK_SIZE = 1600
 
 
 class Handle(QGraphicsEllipseItem):
-    def __init__(self, on_move, radius=11):
+    """Точка угла: размер на экране постоянный при любом увеличении."""
+
+    def __init__(self, on_move, radius=9):
         super().__init__(-radius, -radius, 2 * radius, 2 * radius)
         self.on_move = on_move
         self.setBrush(QBrush(QColor(theme.ACCENT)))
         self.setPen(QPen(QColor("#121212"), 3))
-        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemSendsGeometryChanges)
+        self.setFlags(QGraphicsItem.ItemIsMovable | QGraphicsItem.ItemSendsGeometryChanges
+                      | QGraphicsItem.ItemIgnoresTransformations)
         self.setCursor(Qt.SizeAllCursor)
         self.setZValue(10)
 
@@ -32,11 +35,20 @@ class Handle(QGraphicsEllipseItem):
 
 
 class CropView(QGraphicsView):
+    """Фото с 4 точками. Колесико — увеличить/уменьшить под курсором, перетаскивание фона — сдвиг,
+    двойной щелчок — вписать целиком."""
+
+    MAX_ZOOM = 12.0
+
     def __init__(self):
         super().__init__()
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.Antialiasing)
         self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.zoom = 1.0
         self.pix_item = None
         self.poly = None
         self.handles = []
@@ -49,16 +61,38 @@ class CropView(QGraphicsView):
         scene.addItem(self.pix_item)
         scene.setSceneRect(QRectF(0, 0, pil_img.width, pil_img.height))
         self.poly = QGraphicsPolygonItem()
-        self.poly.setPen(QPen(QColor(theme.ACCENT), 3))
+        pen = QPen(QColor(theme.ACCENT), 2)
+        pen.setCosmetic(True)  # толщина линии не растет при увеличении
+        self.poly.setPen(pen)
         self.poly.setBrush(QBrush(QColor(245, 197, 24, 30)))
         scene.addItem(self.poly)
-        radius = max(10, pil_img.width // 90)
-        self.handles = [Handle(self._moved, radius) for _ in range(4)]
+        self.handles = [Handle(self._moved) for _ in range(4)]
         for h, (x, y) in zip(self.handles, corners):
             scene.addItem(h)
             h.setPos(x, y)
         self._moved()
-        self.fitInView(scene.sceneRect(), Qt.KeepAspectRatio)
+        self.fit()
+
+    def fit(self):
+        self.zoom = 1.0
+        self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+
+    def wheelEvent(self, e):
+        if not self.pix_item:
+            return
+        step = 1.25 if e.angleDelta().y() > 0 else 1 / 1.25
+        new = min(self.MAX_ZOOM, max(1.0, self.zoom * step))
+        if new == 1.0:
+            self.fit()
+        elif new != self.zoom:
+            self.scale(new / self.zoom, new / self.zoom)
+            self.zoom = new
+        e.accept()
+
+    def mouseDoubleClickEvent(self, e):
+        if self.itemAt(e.position().toPoint()) in self.handles:
+            return super().mouseDoubleClickEvent(e)
+        self.fit()
 
     def corners(self):
         return [(h.pos().x(), h.pos().y()) for h in self.handles]
@@ -70,7 +104,7 @@ class CropView(QGraphicsView):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        if self.pix_item:
+        if self.pix_item and self.zoom == 1.0:
             self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
 
 
@@ -80,21 +114,34 @@ class ScanEditor(QDialog):
         self.state, self.client_id, self.doc = state, client_id, doc
         self.is_front = doc.doc_type == BUILTIN_FRONT
         self.setWindowTitle("Редактор скана")
-        self.resize(1300, 820)
+        self.resize(1300, 880)
         self.rotation = 0
         self.result_path = None
         self.original = load_image(doc.path)
 
         client = state.db.client(client_id)
         title = label("Редактор скана", h2=True)
-        sub = label(f"{client.full_name} · {doc.path.name} · {'ID лицо' if self.is_front else 'ID оборот'}", muted=True)
+        sub = label(f"{doc.path.name} · {'ID лицо' if self.is_front else 'ID оборот'}", muted=True)
+
+        # ФИО и ARC крупно — сверить с картой и сразу исправить ошибку OCR
+        self.client = client
+        self.name_edit = QLineEdit(client.full_name)
+        self.name_edit.setPlaceholderText("ФИО латиницей, как на карте")
+        self.name_edit.setStyleSheet("font-size:22px;font-weight:700;letter-spacing:1px;padding:6px 10px;")
+        self.arc_edit = QLineEdit(client.arc_number)
+        self.arc_edit.setPlaceholderText("Номер ARC")
+        self.arc_edit.setFixedWidth(230)
+        self.arc_edit.setStyleSheet("font-size:20px;font-family:Consolas,monospace;padding:6px 10px;")
+        check = vbox(label("ПРОВЕРЬТЕ ПО КАРТЕ: ФИО И НОМЕР (OCR, МОЖНО ИСПРАВИТЬ)", caps=True),
+                     hbox(self.name_edit, self.arc_edit, spacing=10), spacing=6)
 
         self.view = CropView()
         self.view.changed = self._schedule_preview
         auto_b = button("Найти углы автоматически", on_click=self.auto_corners)
         rot_b = button("Повернуть 90°", on_click=self.rotate)
         reset_b = button("Сбросить", on_click=self.reset_corners)
-        left = vbox(label("Потяните желтые точки к углам карты", muted=True), self.view,
+        left = vbox(label("Потяните желтые точки к углам карты · колесико мыши — увеличить, "
+                          "перетащить фон — сдвинуть, двойной щелчок — целиком", muted=True), self.view,
                     hbox(auto_b, rot_b, reset_b, None), spacing=10)
 
         # фильтр
@@ -152,7 +199,7 @@ class ScanEditor(QDialog):
         right.setContentsMargins(18, 16, 18, 16)
         rw.setFixedWidth(380)
 
-        self.setLayout(vbox(hbox(title, sub, None, spacing=14), hbox(left, rw, spacing=16),
+        self.setLayout(vbox(hbox(title, sub, None, spacing=14), check, hbox(left, rw, spacing=16),
                             spacing=12, margins=(20, 16, 20, 16)))
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -210,6 +257,24 @@ class ScanEditor(QDialog):
         else:
             card.thumbnail((300, 190))
             self.preview.setPixmap(pil_to_pixmap(card))
+
+    def save_profile(self) -> bool:
+        """Записывает исправленные ФИО и ARC. True — если что-то изменилось."""
+        name, arc = self.name_edit.text().strip(), self.arc_edit.text().strip()
+        changes = {}
+        if name and name != self.client.full_name:
+            changes["full_name"] = name
+        if arc and arc != self.client.arc_number:
+            changes["arc_number"] = arc
+        if changes:
+            services.set_client_fields(self.state.db, self.client_id, **changes)
+        return bool(changes)
+
+    def done(self, result):
+        # исправленное ФИО сохраняется и при «Отмена» — отменяется только обработка скана
+        if self.save_profile() and result != QDialog.Accepted:
+            self.state.data_changed.emit()
+        super().done(result)
 
     def apply(self):
         corners = [(x / self.scale, y / self.scale) for x, y in self.view.corners()]
