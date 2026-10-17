@@ -4,9 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (QFrame, QGridLayout, QLabel, QListWidget, QListWidgetItem,
-                               QMessageBox, QWidget)
+                               QMessageBox, QPushButton, QSizePolicy, QWidget)
 
 from .. import services
 from ..archive import ARCHIVE_EXTENSIONS
@@ -17,6 +17,69 @@ from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, clear_l
 
 PHOTO_TYPES = [(BUILTIN_FRONT, "ID лицо"), (BUILTIN_BACK, "ID оборот"), (BUILTIN_BANK, "통장사본"),
                ("", "Не определено / лишний файл")]
+
+
+# Статус в очереди: (подпись, цвет). Цвет — и плашка, и полоска слева у строки.
+STATUS_STYLE = {
+    "в очереди": ("в очереди", "#8C8C8C"),
+    "обработка": ("обработка", "#4DA3FF"),
+    "готово": ("готово", "#3DDC84"),
+    "проверить": ("проверить", "#F5C518"),
+    "ошибка": ("ошибка", "#FF5A5F"),
+    "повтор": ("повтор", "#FF8A3D"),
+    "не принят": ("не принят", "#8C8C8C"),
+}
+SPINNER = "◐◓◑◒"
+FINISHED = ("готово", "ошибка", "не принят")
+
+
+def _view_status(q) -> str:
+    if q.status == "готово" and q.result and q.result.warnings:
+        return "проверить"
+    return q.status
+
+
+class QueueRow(QFrame):
+    """Строка очереди: цветная полоска, имя архива, закругленная плашка статуса, ✕ — убрать."""
+
+    def __init__(self, q, on_remove):
+        super().__init__()
+        self.setObjectName("QueueRow")
+        status = _view_status(q)
+        text, color = STATUS_STYLE.get(status, (status, "#8C8C8C"))
+        self.setStyleSheet(f"QFrame#QueueRow{{border-left:4px solid {color};border-radius:0;background:transparent;}}")
+        name = QLabel(q.archive.name)
+        name.setStyleSheet("font-weight:700;font-size:13px;background:transparent;")
+        name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.pill = QLabel(text)
+        self.pill.setStyleSheet(f"background:{color};color:#121212;border-radius:9px;padding:1px 9px;"
+                                "font-size:11px;font-weight:800;")
+        self.pill.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.pill.setFixedHeight(20)
+        self.spinning = status == "обработка"
+        self.pill_text = text
+        detail = QLabel(q.detail or ("ждет своей очереди" if status == "в очереди" else ""))
+        detail.setStyleSheet(f"color:{theme.DIM};font-size:11.5px;background:transparent;")
+        detail.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        detail.setToolTip(q.detail)
+        remove = QPushButton("✕")
+        remove.setFixedSize(24, 24)
+        remove.setCursor(Qt.PointingHandCursor)
+        remove.setToolTip("Убрать из списка (клиент в программе остается)")
+        remove.setStyleSheet("QPushButton{border:none;background:transparent;color:#8C8C8C;font-size:13px;padding:0;}"
+                             "QPushButton:hover{color:#FF5A5F;}")
+        remove.clicked.connect(on_remove)
+        keep = remove.sizePolicy()
+        keep.setRetainSizeWhenHidden(True)  # строка не сжимается, пока кнопки нет
+        remove.setSizePolicy(keep)
+        remove.setVisible(status != "обработка")
+        top = hbox(self.pill, name, remove, spacing=8)
+        top.setStretch(1, 1)
+        self.setLayout(vbox(top, detail, spacing=3, margins=(10, 6, 6, 6)))
+
+    def tick(self, frame: int):
+        if self.spinning:
+            self.pill.setText(f"{SPINNER[frame % len(SPINNER)]} {self.pill_text}")
 
 
 @dataclass
@@ -43,8 +106,22 @@ class IntakePage(QWidget):
                         ARCHIVE_EXTENSIONS, "Архивы (*.zip *.rar)")
         drop.files_dropped.connect(self.state.archives_dropped.emit)
         self.list = QListWidget()
+        self.list.setSpacing(2)
+        self.list.setStyleSheet("QListWidget::item{padding:0;}")
         self.list.currentRowChanged.connect(self.show_item)
-        left = vbox(drop, label("ОЧЕРЕДЬ", caps=True), self.list, spacing=10)
+        self.clear_done_b = button("Убрать готовые", on_click=lambda: self.remove_where(("готово",)))
+        self.clear_fail_b = button("Убрать ошибки", on_click=lambda: self.remove_where(("ошибка", "не принят")))
+        for b in (self.clear_done_b, self.clear_fail_b):
+            b.setStyleSheet("padding:0 10px;font-size:12px;border-radius:9px;min-height:0;")
+            b.setFixedHeight(26)
+            b.setToolTip("Только убрать строки из списка — клиенты в программе остаются")
+        left = vbox(drop, hbox(label("ОЧЕРЕДЬ", caps=True), None, self.clear_done_b, self.clear_fail_b, spacing=6),
+                    self.list, spacing=10)
+        self.rows: List[QueueRow] = []
+        self.frame = 0
+        self.anim = QTimer(self)
+        self.anim.setInterval(150)
+        self.anim.timeout.connect(self._tick)
 
         self.detail = frame("panel")
         self.detail_lay = vbox(spacing=0, margins=(0, 0, 0, 0))
@@ -133,21 +210,57 @@ class IntakePage(QWidget):
         row = self.list.currentRow()
         self.list.blockSignals(True)
         self.list.clear()
+        self.rows = []
         for q in self.queue:
-            mark = {"готово": "✓", "ошибка": "✕", "обработка": "…", "в очереди": "·", "повтор": "⛔",
-                    "не принят": "—"}[q.status]
-            if q.status == "готово" and q.result and q.result.warnings:
-                mark = "⚠"
-            it = QListWidgetItem(f"{mark}  {q.archive.name}\n     {q.status} · {q.detail}"[:120])
-            if mark in ("⚠", "✕", "⛔"):
-                it.setForeground(Qt.yellow)
+            w = QueueRow(q, lambda _=False, q=q: self.remove_item(q))
+            it = QListWidgetItem()
+            it.setSizeHint(QSize(0, 60))
             self.list.addItem(it)
+            self.list.setItemWidget(it, w)
+            self.rows.append(w)
+        if any(r.spinning for r in self.rows):
+            self.anim.start()
+            self._tick()
+        else:
+            self.anim.stop()
+        self.clear_done_b.setVisible(any(q.status == "готово" for q in self.queue))
+        self.clear_fail_b.setVisible(any(q.status in ("ошибка", "не принят") for q in self.queue))
         self.list.setCurrentRow(row if 0 <= row < len(self.queue) else -1)
         self.list.blockSignals(False)
         done = sum(1 for q in self.queue if q.status not in ("в очереди", "обработка"))
         self.title.setText(f"Приемка документов · {len(self.queue)} архив(ов)" if self.queue else
                            "Приемка документов")
         self.steps.setText(f"Обработано {done} из {len(self.queue)}" if self.queue else "")
+
+    def _tick(self):
+        self.frame += 1
+        for r in self.rows:
+            r.tick(self.frame)
+
+    def remove_item(self, q):
+        """Убирает строку из списка. Клиент, уже принятый в программу, остается."""
+        if q.status == "обработка" or q not in self.queue:
+            return
+        if q.status == "повтор" and q.result is not None and q.result.pending:
+            services.discard_intake(q.result)
+        current = self.list.currentRow()
+        current_q = self.queue[current] if 0 <= current < len(self.queue) else None
+        self.queue.remove(q)
+        self._after_remove(current_q)
+
+    def remove_where(self, statuses):
+        current = self.list.currentRow()
+        current_q = self.queue[current] if 0 <= current < len(self.queue) else None
+        self.queue = [q for q in self.queue if q.status not in statuses]
+        self._after_remove(current_q)
+
+    def _after_remove(self, current_q):
+        self._render_list()
+        row = self.queue.index(current_q) if current_q in self.queue else (0 if self.queue else -1)
+        self.list.setCurrentRow(row)
+        self.show_item(row)
+        if not self.queue:
+            self.on_status("", 0, 0)
 
     # ------------------------------------------------------------ детали
 
