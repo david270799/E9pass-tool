@@ -26,14 +26,16 @@ class ClientPage(QWidget):
         self.name = label("", h1=True)
         self.badge_host = hbox()
         self.crumb = label("", muted=True)
-        back = button("← Клиенты", flat=True, on_click=lambda: self.state.navigate.emit("dashboard"))
+        back = button("←  Назад", on_click=lambda: self.state.navigate.emit("dashboard"))
+        back.setToolTip("Вернуться к списку клиентов")
+        back.setStyleSheet("QPushButton{font-size:15px;font-weight:700;min-height:40px;padding:0 18px;}")
         self.btn_folder = button("Открыть папку", on_click=lambda: open_path(self.client().folder))
         self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
         self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
         self.btn_delete = button("Удалить клиента", on_click=self.delete_client)
         self.btn_delete.setStyleSheet(f"QPushButton{{border-color:{theme.ACCENT};color:{theme.ACCENT};}}")
         self.btn_delete.setToolTip("Удалить клиента и все его файлы из программы")
-        header = hbox(vbox(hbox(back, self.crumb, None, spacing=4), hbox(self.name, self.badge_host, None, spacing=14),
+        header = hbox(vbox(hbox(back, self.crumb, None, spacing=12), hbox(self.name, self.badge_host, None, spacing=14),
                            spacing=2), None, self.btn_delete, self.btn_folder, self.btn_zip, self.btn_master)
 
         # --- профиль
