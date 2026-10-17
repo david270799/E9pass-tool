@@ -331,22 +331,48 @@ def save_back_scan(db: Database, client_id: int, back_path: Path, corners=None,
 
 # ====================================================================== догрузка документов
 
+NAME_TOKENS = ("{ФИО}", "{фио}", "{FIO}", "{fio}")
+
+
+def name_matches_client(stem: str, client_name: str) -> bool:
+    """Имя файла — это ФИО клиента (любой регистр, порядок слов, лишнее « (2)»): ABILOV BOBORAKHIM.pdf."""
+    file_words = re.findall(r"[a-z]+", stem.lower())
+    name_words = set(re.findall(r"[a-z]+", (client_name or "").lower()))
+    return len(file_words) >= 2 and len(name_words) >= 2 and set(file_words) <= name_words
+
+
+def match_pattern(pat: str, stem: str, names, client_name: str = "") -> bool:
+    """Маска имени файла. «re:…» — регулярное выражение для имени без расширения (целиком),
+    «{ФИО}» — имя файла совпадает с ФИО клиента, иначе маска с * и ? (без звездочек — «содержит»)."""
+    pat_s = pat.strip()
+    if not pat_s:
+        return False
+    if pat_s in NAME_TOKENS:
+        return name_matches_client(stem, client_name)
+    if pat_s.lower().startswith("re:"):
+        try:
+            return re.fullmatch(pat_s[3:].strip(), stem.strip(), re.I) is not None
+        except re.error:
+            return False
+    pat_l = pat_s.lower()
+    if "*" not in pat_l and "?" not in pat_l:
+        pat_l = f"*{pat_l}*"  # маска без звездочек — «содержит»
+    return any(fnmatch.fnmatch(n, pat_l) for n in names)
+
+
 def classify_file(path: Path, rules: List[DocRule], engine: Optional[OcrEngine] = None,
-                  original_name: str = "") -> Tuple[str, str]:
+                  original_name: str = "", client_name: str = "") -> Tuple[str, str]:
     """Тип документа по маске имени, затем по словам OCR/текста PDF. ('', причина) — не определен."""
     path = Path(path)
     candidates = [r for r in rules if r.code != BUILTIN_A4]
     names = {path.name.lower(), path.stem.lower()}
+    stems = [path.stem]
     if original_name:
         names |= {original_name.lower(), Path(original_name).stem.lower()}
+        stems.insert(0, Path(original_name).stem)
     for r in candidates:
         for pat in r.filename_patterns:
-            pat_l = pat.strip().lower()
-            if not pat_l:
-                continue
-            if "*" not in pat_l and "?" not in pat_l:
-                pat_l = f"*{pat_l}*"  # маска без звездочек — «содержит»
-            if any(fnmatch.fnmatch(n, pat_l) for n in names):
+            if any(match_pattern(pat, st, names, client_name) for st in stems):
                 return r.code, f"маска имени «{pat}»"
     text = ""
     kind = pdf_tools.real_extension(path)
@@ -408,8 +434,9 @@ def _try_unlock_doc(db: Database, client: Client, doc, progress: Progress = _noo
 
 def _classify_doc(db: Database, doc, rules, engine: Optional[OcrEngine], progress: Progress = _noop) -> str:
     progress(f"Определяю тип: {doc.path.name}")
+    client = db.client(doc.client_id)
     code, reason = classify_file(doc.path, rules, engine if doc.password_status != "locked" else None,
-                                 doc.original_name)
+                                 doc.original_name, client.full_name if client else "")
     if doc.password_status == "unlocked":
         reason += " · пароль снят"
     elif doc.password_status == "locked":
@@ -500,7 +527,9 @@ def unlock_with_password(db: Database, doc_id: int, client_id: int, password: st
     if ok:
         detected = doc.detected_by
         if not doc.doc_type:
-            code, reason = classify_file(doc.path, db.rules(), None, doc.original_name)
+            client = db.client(client_id)
+            code, reason = classify_file(doc.path, db.rules(), None, doc.original_name,
+                                         client.full_name if client else "")
             db.update_document(doc_id, doc_type=code)
             detected = reason
         db.update_document(doc_id, password_status="unlocked", detected_by=f"{detected} · пароль введен вручную")
@@ -519,6 +548,11 @@ class MasterResult:
     unknown: List[str] = field(default_factory=list)   # документы без типа (не попали в Master-PDF)
 
 
+def _natural_key(name: str):
+    """21, 21-1, 21-2, 22 … 26 и 1, 2 … 10 — по порядку чисел, а не по алфавиту."""
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
 def master_queue(db: Database, client_id: int):
     """[(правило, [документы])] по очереди правил Master-PDF."""
     docs = db.documents(client_id)
@@ -526,7 +560,8 @@ def master_queue(db: Database, client_id: int):
     for r in db.rules():
         if not r.in_master:
             continue
-        items = [d for d in docs if d.doc_type == r.code and d.password_status != "locked"]
+        items = sorted((d for d in docs if d.doc_type == r.code and d.password_status != "locked"),
+                       key=lambda d: _natural_key(Path(d.original_name or d.path.name).stem))
         out.append((r, items))
     return out
 

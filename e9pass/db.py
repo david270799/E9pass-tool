@@ -64,11 +64,20 @@ BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_A4 = "id_front", "id_back", "
 DEFAULT_RULES = [
     # code, name, patterns, keywords, order, in_master, print, builtin
     (BUILTIN_A4, "ID лицо на А4", [], [], 1, 1, 1, 1),
-    ("contract", "Договор", ["*계약*", "*contract*", "*dogovor*", "*договор*"],
+    ("contract", "Договор", ["{ФИО}", "*계약*", "*contract*", "*dogovor*", "*договор*"],
      ["근로계약서", "표준근로계약서", "근로계약"], 2, 1, 1, 0),
-    ("insurance", "Страховка", ["*보험*", "*insur*"], ["보험", "가입증명서"], 3, 1, 0, 0),
+    ("insurance", "Страховка", ["nhis*", "*보험*", "*insur*"], ["보험", "가입증명서"], 3, 1, 0, 0),
     ("employment", "Справка с работы", ["*재직*"], ["재직증명서"], 4, 1, 0, 0),
     ("income", "Справка о доходах", ["*소득*", "*income*"], ["소득금액증명", "원천징수"], 5, 1, 0, 0),
+    ]
+# Шаблоны по номеру файла и скриншоты (добавлены позже — старые базы получают их миграцией).
+NEW_RULES_V2 = [
+    ("sme_job", "중소기업취업", ["re:[1-9]([-_ ]\\d+)?"], [], 6, 1, 0, 0),
+    ("global_income", "종합소득세", ["re:0[1-9]([-_ ]\\d+)?"], [], 7, 1, 0, 0),
+    ("wage_statement", "근로소득지급명세서", ["re:2[0-9]([-_ ]\\d+)?"], [], 8, 1, 0, 0),
+    ("screenshot", "Screenshot", ["Снимок экрана*", "Screenshot*", "스크린샷*", "화면 캡처*"], [], 9, 1, 0, 0),
+]
+DEFAULT_RULES = DEFAULT_RULES + NEW_RULES_V2 + [
     (BUILTIN_FRONT, "ID лицо (фото)", [], ["외국인등록증", "RESIDENCE CARD"], 101, 0, 0, 1),
     (BUILTIN_BACK, "ID оборот (фото)", [], ["체류지", "신고일"], 102, 0, 0, 1),
     (BUILTIN_BANK, "통장사본", ["*통장*", "*bank*"], ["은행", "계좌번호", "예금"], 103, 0, 0, 1),
@@ -151,6 +160,28 @@ class Database:
                     " in_master, print_step3, builtin) VALUES (?,?,?,?,?,?,?,?)",
                     [(r[0], r[1], json.dumps(r[2], ensure_ascii=False), json.dumps(r[3], ensure_ascii=False),
                       *r[4:]) for r in DEFAULT_RULES])
+                c.execute("PRAGMA user_version = 2")
+            if c.execute("PRAGMA user_version").fetchone()[0] < 2:
+                self._migrate_rules_v2(c)
+                c.execute("PRAGMA user_version = 2")
+
+    @staticmethod
+    def _migrate_rules_v2(c):
+        """Старая база: добавить шаблоны «ФИО → договор», «nhis → страховка» и новые типы по номеру файла."""
+        rows = {r["code"]: r for r in c.execute("SELECT code, filename_patterns FROM doc_rules")}
+        for code, pat in (("contract", "{ФИО}"), ("insurance", "nhis*")):
+            if code in rows:
+                pats = json.loads(rows[code]["filename_patterns"] or "[]")
+                if pat not in pats:
+                    c.execute("UPDATE doc_rules SET filename_patterns=? WHERE code=?",
+                              (json.dumps([pat] + pats, ensure_ascii=False), code))
+        last = c.execute("SELECT COALESCE(MAX(sort_order), 0) FROM doc_rules WHERE sort_order < 100").fetchone()[0]
+        for i, r in enumerate(NEW_RULES_V2, 1):
+            if r[0] not in rows:
+                c.execute("INSERT INTO doc_rules(code, doc_name, filename_patterns, ocr_keywords, sort_order,"
+                          " in_master, print_step3, builtin) VALUES (?,?,?,?,?,?,?,?)",
+                          (r[0], r[1], json.dumps(r[2], ensure_ascii=False), json.dumps(r[3], ensure_ascii=False),
+                           last + i, *r[5:]))
 
     @contextmanager
     def conn(self):

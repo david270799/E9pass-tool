@@ -68,7 +68,9 @@ class DocTypesPage(QWidget):
         editor.setLayout(vbox(
             self.edit_title, self.builtin_note,
             vbox(label("Название типа", dim=True), self.f_name, spacing=4),
-            vbox(label("Маски имени файла через запятую (* — любые символы)", dim=True), self.f_patterns, spacing=4),
+            vbox(label("Маски имени файла через запятую (* — любые символы)", dim=True), self.f_patterns,
+                 label("{ФИО} — файл назван именем клиента · re:… — шаблон, например re:0[1-9] для 01…09", dim=True),
+                 spacing=4),
             vbox(label("Ключевые слова OCR через запятую (если имя не подошло)", dim=True), self.f_keywords, spacing=4),
             self.f_master, self.f_print,
             button("Проверить правило на файле…", on_click=self.test_file), self.test_result,

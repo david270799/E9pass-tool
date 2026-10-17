@@ -39,6 +39,9 @@ def env(tmp_path, monkeypatch):
 
 def test_file_without_extension_is_unlocked_and_classified_after_rule_change(env):
     db, cid, tmp = env
+    rule = next(r for r in db.rules() if r.code == "insurance")
+    rule.filename_patterns = [p for p in rule.filename_patterns if "nhis" not in p]  # будто маски еще нет
+    db.save_rule(rule)
     src = tmp / "nhis-20260730162847448hzr9ewQYqbX1b0T+"   # как скачивается с сайта — без .pdf
     make_pdf(src, "insurance", password="950101")
     services.add_documents(db, cid, [src], engine=NoOcr())
