@@ -276,6 +276,35 @@ def name_suffix_hits(text: str) -> int:
     return hits
 
 
+_PATRONYMIC_ENDINGS = ("ICH", "OVNA", "EVNA")
+
+
+def order_fio(name: str) -> str:
+    """Отчество всегда в конце: Фамилия Имя Отчество.
+
+    Если строки карты прочитаны не по порядку, OCR дает «TOJIEVICH SAYITKHUJAEV UMID» —
+    отчество (…ICH, …OVNA/EVNA или «имя отца + UGLI/KIZI») переносится в конец.
+    """
+    words = name.split()
+    if len(words) < 3:  # без имени отчества не бывает: «KARPOVICH IVAN» — фамилия на -ICH
+        return name
+    groups, i = [], 0
+    while i < len(words):
+        if i + 1 < len(words) and words[i + 1] in _NAME_PARTICLES:
+            groups.append((words[i:i + 2], True))
+            i += 2
+        else:
+            groups.append(([words[i]], words[i].endswith(_PATRONYMIC_ENDINGS) and len(words[i]) > 5))
+            i += 1
+    if len(groups) < 3 or groups[-1][1]:
+        return name
+    patronymic = [g for g, is_p in groups if is_p]
+    if len(patronymic) != 1:
+        return name
+    rest = [w for g, is_p in groups if not is_p for w in g]
+    return " ".join(rest + patronymic[0])
+
+
 def _is_name_like(text: str) -> bool:
     words = text.split()
     if not words or len(text) < 3:
@@ -398,7 +427,7 @@ def parse_card(lines: List[str]) -> CardData:
     data.issuer = find_issuer(lines)
     data.country = find_country(lines)
     data.country_ru = COUNTRIES.get(data.country, "")
-    data.name = find_name(lines, data.country)
+    data.name = order_fio(find_name(lines, data.country))
 
     sex_from_no, data.birth_date = info_from_reg_no(data.reg_no)
     sex_printed = find_sex(lines)

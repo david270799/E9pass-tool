@@ -153,3 +153,21 @@ def test_name_label_read_as_single_char_and_korean_noise():
 def test_fallback_joins_wrapped_name():
     lines = ["외국인등록증", "KARIMOV JASUR B-", "AKHTIYOR UGLI", "UZBEKISTAN"]
     assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI"
+
+
+def test_patronymic_always_last():
+    from e9pass.ocr.front import order_fio
+    assert order_fio("TOJIEVICH KARIMOV UMID") == "KARIMOV UMID TOJIEVICH"
+    assert order_fio("RUSTAMOVNA TURSUNOVA MADINA") == "TURSUNOVA MADINA RUSTAMOVNA"
+    assert order_fio("BAKHTIYOR UGLI KARIMOV ALISHER") == "KARIMOV ALISHER BAKHTIYOR UGLI"
+    assert order_fio("KARIMOV TOJIEVICH UMID") == "KARIMOV UMID TOJIEVICH"
+    # уже правильно или нечего переставлять
+    assert order_fio("KARIMOV UMID TOJIEVICH") == "KARIMOV UMID TOJIEVICH"
+    assert order_fio("KARIMOV ALISHER BAKHTIYOR UGLI") == "KARIMOV ALISHER BAKHTIYOR UGLI"
+    assert order_fio("KARPOVICH IVAN") == "KARPOVICH IVAN"
+    assert order_fio("NGUYEN VAN AN") == "NGUYEN VAN AN"
+
+
+def test_swapped_name_lines_from_ocr():
+    lines = ["성명 Name", "TOJIEVICH", "KARIMOV UMID", "UZBEKISTAN"]
+    assert parse_card(lines).name == "KARIMOV UMID TOJIEVICH"
