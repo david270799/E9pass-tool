@@ -259,6 +259,22 @@ def _is_card_title(words: List[str]) -> bool:
     return hits >= 2
 
 
+# Типичные окончания фамилий и отчеств СНГ: ROMANOV(A), ALIEV(A), ABDURAKHMONOVICH, …OVNA,
+# узбекские UGLI / KIZI (сын / дочь). Отдельные слова UGLI, OGLI, KIZI, QIZI тоже признак.
+_NAME_ENDINGS = ("OVICH", "EVICH", "OVNA", "EVNA", "ICH", "OVA", "EVA", "OV", "EV",
+                 "UGLI", "OGLI", "KIZI", "QIZI", "INA", "IN", "SKIY", "SKAYA", "ENKO")
+_NAME_PARTICLES = {"UGLI", "OGLI", "UG'LI", "O'G'LI", "KIZI", "QIZI"}
+
+
+def name_suffix_hits(text: str) -> int:
+    """Сколько слов похожи на фамилию/отчество СНГ — подсказка, что строка и есть ФИО."""
+    hits = 0
+    for w in text.split():
+        if w in _NAME_PARTICLES or (len(w) >= 4 and w.endswith(_NAME_ENDINGS)):
+            hits += 1
+    return hits
+
+
 def _is_name_like(text: str) -> bool:
     words = text.split()
     if not words or len(text) < 3:
@@ -329,15 +345,19 @@ def find_name(lines: List[str], country: str = "") -> str:
             cand = _name_line(lines[j], country)
             if cand:
                 return _with_continuation(cand, lines[j + 1:], country)
-    # 2) Самая длинная строка, похожая на имя.
-    best = ""
+    # 2) Строка, похожая на имя: сначала с окончаниями фамилии/отчества (-OV, -ICH, UGLI…),
+    #    при равенстве — самая длинная.
+    best, best_key = "", (0, 0)
     for line in lines:
         raw = _clean(line)
         if raw != raw.upper() or re.search(r"\d", raw):
             continue
         cand = _latin_words(raw)
-        if _is_name_like(cand) and cand != country and len(cand) > len(best):
-            best = cand
+        if not _is_name_like(cand) or cand == country:
+            continue
+        key = (name_suffix_hits(cand), len(cand))
+        if key > best_key:
+            best, best_key = cand, key
     return normalize_name(best)
 
 

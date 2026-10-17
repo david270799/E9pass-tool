@@ -120,3 +120,22 @@ def test_name_similar_to_title_word_is_kept():
     assert parse_card(["성명 Name", "ALIEV RUSTAM", "UZBEKISTAN"]).name == "ALIEV RUSTAM"
     assert parse_card(["ALIEN REGISTRATION CARD", "ALIEV RUSTAM", "UZBEKISTAN"]).name == "ALIEV RUSTAM"
     assert parse_card(["성명 Name", "CARDENAS RESIDOV", "KAZAKHSTAN"]).name == "CARDENAS RESIDOV"
+
+
+def test_cis_name_endings_win_without_label():
+    # подпись «성명» не распознана; лишние строки заглавными — не имя
+    lines = ["외국인등록증", "HUMAN RESOURCES BRANCH", "940312-5234567",
+             "ROMANOV ABDURAKHMONOVICH", "UZBEKISTAN"]
+    assert parse_card(lines).name == "ROMANOV ABDURAKHMONOVICH"
+    lines = ["SOME LONG NOISE TEXT HERE", "KARIMOV ALISHER BAKHTIYOR UGLI", "UZBEKISTAN"]
+    assert parse_card(lines).name == "KARIMOV ALISHER BAKHTIYOR UGLI"
+    lines = ["SOME LONG NOISE TEXT HERE", "RAKHIMOVA DILNOZA", "UZBEKISTAN"]
+    assert parse_card(lines).name == "RAKHIMOVA DILNOZA"
+
+
+def test_name_suffix_hits():
+    from e9pass.ocr.front import name_suffix_hits
+    assert name_suffix_hits("EGAMBERDIEV AZAMAT PULATOVICH") == 2
+    assert name_suffix_hits("TURSUNOVA MADINA RUSTAMOVNA") == 3
+    assert name_suffix_hits("ALIEV SHERZOD KIZI") == 2
+    assert name_suffix_hits("NGUYEN VAN AN") == 0  # не СНГ: подсказки нет, работает как раньше
