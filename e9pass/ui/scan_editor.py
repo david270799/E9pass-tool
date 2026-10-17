@@ -132,8 +132,16 @@ class ScanEditor(QDialog):
         self.arc_edit.setPlaceholderText("Номер ARC")
         self.arc_edit.setFixedWidth(230)
         self.arc_edit.setStyleSheet("font-size:20px;font-family:Consolas,monospace;padding:6px 10px;")
-        check = vbox(label("ПРОВЕРЬТЕ ПО КАРТЕ: ФИО И НОМЕР (OCR, МОЖНО ИСПРАВИТЬ)", caps=True),
-                     hbox(self.name_edit, self.arc_edit, spacing=10), spacing=6)
+        # для оборота вместо ФИО — адрес регистрации
+        self.addr_edit = QLineEdit(client.registered_address)
+        self.addr_edit.setPlaceholderText("Адрес регистрации (체류지), как на обороте карты")
+        self.addr_edit.setStyleSheet("font-size:19px;font-weight:600;padding:6px 10px;")
+        if self.is_front:
+            check = vbox(label("ПРОВЕРЬТЕ ПО КАРТЕ: ФИО И НОМЕР (OCR, МОЖНО ИСПРАВИТЬ)", caps=True),
+                         hbox(self.name_edit, self.arc_edit, spacing=10), spacing=6)
+        else:
+            check = vbox(label("ПРОВЕРЬТЕ ПО КАРТЕ: АДРЕС (OCR, МОЖНО ИСПРАВИТЬ)", caps=True),
+                         self.addr_edit, spacing=6)
 
         self.view = CropView()
         self.view.changed = self._schedule_preview
@@ -259,19 +267,24 @@ class ScanEditor(QDialog):
             self.preview.setPixmap(pil_to_pixmap(card))
 
     def save_profile(self) -> bool:
-        """Записывает исправленные ФИО и ARC. True — если что-то изменилось."""
-        name, arc = self.name_edit.text().strip(), self.arc_edit.text().strip()
+        """Записывает исправленные ФИО и ARC (лицо) или адрес (оборот). True — если что-то изменилось."""
         changes = {}
-        if name and name != self.client.full_name:
-            changes["full_name"] = name
-        if arc and arc != self.client.arc_number:
-            changes["arc_number"] = arc
+        if self.is_front:
+            name, arc = self.name_edit.text().strip(), self.arc_edit.text().strip()
+            if name and name != self.client.full_name:
+                changes["full_name"] = name
+            if arc and arc != self.client.arc_number:
+                changes["arc_number"] = arc
+        else:
+            addr = " ".join(self.addr_edit.text().split())
+            if addr and addr != self.client.registered_address:
+                changes["registered_address"] = addr
         if changes:
             services.set_client_fields(self.state.db, self.client_id, **changes)
         return bool(changes)
 
     def done(self, result):
-        # исправленное ФИО сохраняется и при «Отмена» — отменяется только обработка скана
+        # исправленные ФИО / адрес сохраняются и при «Отмена» — отменяется только обработка скана
         if self.save_profile() and result != QDialog.Accepted:
             self.state.data_changed.emit()
         super().done(result)
