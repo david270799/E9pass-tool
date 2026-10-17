@@ -261,8 +261,9 @@ def _is_card_title(words: List[str]) -> bool:
 
 # Типичные окончания фамилий и отчеств СНГ: ROMANOV(A), ALIEV(A), ABDURAKHMONOVICH, …OVNA,
 # узбекские UGLI / KIZI (сын / дочь). Отдельные слова UGLI, OGLI, KIZI, QIZI тоже признак.
+# -IN/-INA не берем: узбекские имена на -DIN (NURIDDIN, SHAMSIDDIN) — не фамилии.
 _NAME_ENDINGS = ("OVICH", "EVICH", "OVNA", "EVNA", "ICH", "OVA", "EVA", "OV", "EV",
-                 "UGLI", "OGLI", "KIZI", "QIZI", "INA", "IN", "SKIY", "SKAYA", "ENKO")
+                 "UGLI", "OGLI", "KIZI", "QIZI", "SKIY", "SKAYA", "ENKO")
 _NAME_PARTICLES = {"UGLI", "OGLI", "UG'LI", "O'G'LI", "KIZI", "QIZI"}
 
 
@@ -308,6 +309,7 @@ def _name_line(line: str, country: str) -> str:
     Подпись «Name» под корейским «성명» OCR часто читает как мусор («Yamc AT PULATOVICH 7») —
     слова со строчными буквами и цифры отбрасываются. Строки с корейским текстом — не имя.
     """
+    line = _strip_korean_prefix(line)
     if re.search(r"[가-힣]", line):
         return ""
     words = re.findall(r"(?<![A-Za-z])[A-Z][A-Z'\-]*(?![A-Za-z])", line)
@@ -317,6 +319,15 @@ def _name_line(line: str, country: str) -> str:
     if cand == country or _looks_like_country(cand):
         return ""
     return cand
+
+
+def _strip_korean_prefix(line: str) -> str:
+    """Убирает обрывки корейских подписей в начале строки: «틀 AKHTIYOR UGLI», «명 KARIMOV»."""
+    words = _clean(line).split(" ")
+    for _ in range(2):
+        if words and re.fullmatch(r"[가-힣/:.]{1,4}", words[0]):
+            words = words[1:]
+    return " ".join(words)
 
 
 def _with_continuation(first: str, rest_lines: List[str], country: str) -> str:
@@ -333,7 +344,8 @@ def _with_continuation(first: str, rest_lines: List[str], country: str) -> str:
 def find_name(lines: List[str], country: str = "") -> str:
     # 1) Подпись "성명" / "Name": имя в той же строке после неё или в следующей.
     for i, line in enumerate(lines):
-        m = re.search(r"(성\s*명|Name)\s*[:.]?\s*(.*)", line, re.I)
+        # «성 명» OCR иногда читает как одно «명» перед именем.
+        m = re.search(r"(성\s*명|^\s*명(?=\s+[A-Z])|Name)\s*[:.]?\s*(.*)", line, re.I)
         if not m:
             continue
         # OCR часто искажает саму подпись «Name» (Namne, Narne) — убираем похожие слова.
@@ -347,14 +359,17 @@ def find_name(lines: List[str], country: str = "") -> str:
                 return _with_continuation(cand, lines[j + 1:], country)
     # 2) Строка, похожая на имя: сначала с окончаниями фамилии/отчества (-OV, -ICH, UGLI…),
     #    при равенстве — самая длинная.
+    #    Перенос имени на следующую строку присоединяется.
     best, best_key = "", (0, 0)
-    for line in lines:
-        raw = _clean(line)
+    for i, line in enumerate(lines):
+        raw = _strip_korean_prefix(line)
         if raw != raw.upper() or re.search(r"\d", raw):
             continue
         cand = _latin_words(raw)
         if not _is_name_like(cand) or cand == country:
             continue
+        if cand.endswith("-") or name_suffix_hits(cand):
+            cand = _with_continuation(cand, lines[i + 1:], country)
         key = (name_suffix_hits(cand), len(cand))
         if key > best_key:
             best, best_key = cand, key

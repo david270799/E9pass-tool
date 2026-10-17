@@ -136,6 +136,20 @@ def test_cis_name_endings_win_without_label():
 def test_name_suffix_hits():
     from e9pass.ocr.front import name_suffix_hits
     assert name_suffix_hits("EGAMBERDIEV AZAMAT PULATOVICH") == 2
-    assert name_suffix_hits("TURSUNOVA MADINA RUSTAMOVNA") == 3
+    assert name_suffix_hits("TURSUNOVA MADINA RUSTAMOVNA") == 2
     assert name_suffix_hits("ALIEV SHERZOD KIZI") == 2
+    assert name_suffix_hits("SHAMSIDDIN NURIDDIN") == 0
     assert name_suffix_hits("NGUYEN VAN AN") == 0  # не СНГ: подсказки нет, работает как раньше
+
+
+def test_name_label_read_as_single_char_and_korean_noise():
+    # реальный вывод OCR: «성 명» прочитано как «명», перед второй строкой мусор «틀»
+    lines = ["외국인등록증 FESIDENCE CARD { KOR", "외 국인 950101 - 성   별 M", "등국번호",
+             "명 KARIMOV JASUR B-", "틀 AKHTIYOR UGLI", "곳 UZBEKISTAN",
+             "체류자격   비전문 취업(E-9)", "발급이자 2023.05.12", "CHIEF , SUWON BRANCH OFFICE"]
+    assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI"
+
+
+def test_fallback_joins_wrapped_name():
+    lines = ["외국인등록증", "KARIMOV JASUR B-", "AKHTIYOR UGLI", "UZBEKISTAN"]
+    assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI"
