@@ -1,8 +1,8 @@
-"""Локальный OCR на базе EasyOCR. Изображения никуда не отправляются.
+"""Локальный OCR: RapidOCR (модели PaddleOCR в формате ONNX). Изображения никуда не отправляются.
 
-Модели берутся из папки ``models`` рядом с программой (или из
-``E9PASS_MODELS_DIR``). Если их там нет, EasyOCR один раз скачивает модели
-(только веса нейросети, без ваших данных) и дальше работает без интернета.
+Модели берутся из папки ``models`` рядом с программой (или из ``E9PASS_MODELS_DIR``):
+поиск строк PP-OCRv6, поворот строк и распознавание корейского + латиницы PP-OCRv5.
+Если файлов там нет, RapidOCR один раз скачивает их (только веса нейросети, без ваших данных).
 """
 
 import os
@@ -23,7 +23,10 @@ except ImportError:
     pass
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic"}
-MODEL_FILES = ("craft_mlt_25k.pth", "korean_g2.pth")
+DET_MODEL = "PP-OCRv6_det_small.onnx"
+CLS_MODEL = "ch_ppocr_mobile_v2.0_cls_mobile.onnx"
+REC_MODEL = "korean_PP-OCRv5_rec_mobile.onnx"
+MODEL_FILES = (DET_MODEL, CLS_MODEL, REC_MODEL)
 
 
 def models_dir() -> Path:
@@ -138,7 +141,7 @@ def crop_card(img: Image.Image) -> Image.Image:
 
 
 def group_lines(results) -> List[str]:
-    """Собирает фрагменты EasyOCR в строки по вертикальному положению."""
+    """Собирает фрагменты OCR в строки по вертикальному положению."""
     items = []
     for box, text, _conf in results:
         ys = [p[1] for p in box]
@@ -163,20 +166,29 @@ def _score(results) -> float:
     return sum(conf * len(text) for _box, text, conf in results)
 
 
+def rapidocr_params() -> dict:
+    from rapidocr import LangRec, ModelType, OCRVersion
+
+    params = {"Global.log_level": "error",
+              "Rec.lang_type": LangRec.KOREAN, "Rec.ocr_version": OCRVersion.PPOCRV5,
+              "Rec.model_type": ModelType.MOBILE}
+    mdir = models_dir()
+    if all((mdir / f).exists() for f in MODEL_FILES):
+        params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
+                       "Rec.model_path": str(mdir / REC_MODEL)})
+    return params
+
+
 class OcrEngine:
-    """Один экземпляр на программу; EasyOCR загружается при первом использовании."""
+    """Один экземпляр на программу; модели загружаются при первом использовании."""
 
     _instance = None
     _lock = threading.Lock()
 
-    def __init__(self, gpu: bool = False):
-        import easyocr  # тяжёлый импорт — только при создании
+    def __init__(self):
+        from rapidocr import RapidOCR  # импорт только при создании
 
-        mdir = models_dir()
-        kwargs = {"gpu": gpu, "verbose": False}
-        if all((mdir / f).exists() for f in MODEL_FILES):
-            kwargs.update(model_storage_directory=str(mdir), download_enabled=False)
-        self.reader = easyocr.Reader(["ko", "en"], **kwargs)
+        self.reader = RapidOCR(params=rapidocr_params())
         self._run_lock = threading.Lock()
 
     @classmethod
@@ -187,8 +199,12 @@ class OcrEngine:
             return cls._instance
 
     def readtext(self, img: Image.Image):
-        with self._run_lock:  # EasyOCR не любит параллельные вызовы
-            return self.reader.readtext(np.array(img), paragraph=False)
+        """[(4 точки рамки, текст, уверенность)] — фрагменты текста на изображении."""
+        with self._run_lock:
+            res = self.reader(np.array(img.convert("RGB"))[:, :, ::-1])  # RapidOCR ждет BGR, как OpenCV
+        if res is None or res.boxes is None or res.txts is None:
+            return []
+        return [(box.tolist(), txt, float(score)) for box, txt, score in zip(res.boxes, res.txts, res.scores)]
 
     def lines(self, img: Image.Image) -> List[str]:
         return group_lines(self.readtext(img))

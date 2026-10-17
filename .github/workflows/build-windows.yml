@@ -26,7 +26,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r requirements.txt pyinstaller pytest
 
       - name: Unit tests
@@ -40,9 +39,9 @@ jobs:
           pyinstaller --noconfirm --windowed --name E9pay
           --icon e9pass/assets/logo.ico
           --add-data "e9pass/assets;e9pass/assets"
-          --collect-all easyocr --collect-all torchvision --collect-all pymupdf --collect-all pikepdf --collect-all pyzipper
-          --collect-submodules pillow_heif --collect-submodules skimage
-          --exclude-module tkinter --exclude-module matplotlib
+          --collect-all rapidocr --collect-all onnxruntime --collect-all pymupdf --collect-all pikepdf --collect-all pyzipper
+          --collect-submodules pillow_heif
+          --exclude-module tkinter --exclude-module matplotlib --exclude-module torch
           main.py
 
       - name: Add models and self-test sample

@@ -65,7 +65,7 @@
 1. Установите **Python 3.12** с [python.org](https://www.python.org/downloads/windows/),
    отметьте **«Add python.exe to PATH»**.
 2. Скачайте репозиторий (Code → Download ZIP) и распакуйте.
-3. Запустите **`setup.bat`** (5–15 минут, около 2,5 ГБ).
+3. Запустите **`setup.bat`** (несколько минут, около 500 МБ).
 4. Дальше программа запускается через **`run.bat`**.
 
 Данные хранятся в папке **`D:\E9pass`** (если диска D нет — `C:\Users\<вы>\E9pass`):
@@ -94,7 +94,7 @@ e9pass/services.py      приемка архивов, догрузка, пар�
 e9pass/archive.py       распаковка zip/rar (имена cp949, защита от ../)
 e9pass/pdf_tools.py     pikepdf (пароли), PyMuPDF (текст, склейка)
 e9pass/scan.py          perspective crop, фильтры, лист А4
-e9pass/ocr/             EasyOCR + разбор: front.py (лицо), back.py (адрес), bank.py, detect.py
+e9pass/ocr/             RapidOCR (PaddleOCR, ONNX) + разбор: front.py (лицо), back.py (адрес), bank.py, detect.py
 e9pass/ui/              PySide6: dashboard, intake, client, doctypes, printing, scan_editor
 tests/                  python -m pytest
 ```

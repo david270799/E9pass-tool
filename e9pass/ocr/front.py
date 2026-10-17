@@ -280,6 +280,17 @@ def name_suffix_hits(text: str) -> int:
 _PATRONYMIC_ENDINGS = ("ICH", "OVNA", "EVNA")
 
 
+def _drop_label_noise(name: str) -> str:
+    """Обрывок подписи «성명 Name» перед фамилией: «MY ABILOV BOBORAKHIM» -> «ABILOV BOBORAKHIM».
+
+    Убирается только 1–2 буквы перед фамилией на -OV/-EV(A): вьетнамское «LE VAN AN» остается.
+    """
+    words = name.split()
+    if len(words) >= 3 and len(words[0]) <= 2 and words[1].endswith(("OV", "EV", "OVA", "EVA")):
+        return " ".join(words[1:])
+    return name
+
+
 def order_fio(name: str) -> str:
     """Отчество всегда в конце: Фамилия Имя Отчество.
 
@@ -432,7 +443,7 @@ def parse_card(lines: List[str]) -> CardData:
     data.issuer = find_issuer(lines)
     data.country = find_country(lines)
     data.country_ru = COUNTRIES.get(data.country, "")
-    data.name = order_fio(find_name(lines, data.country))
+    data.name = order_fio(_drop_label_noise(find_name(lines, data.country)))
 
     sex_from_no, data.birth_date = info_from_reg_no(data.reg_no)
     sex_printed = find_sex(lines)

@@ -7,7 +7,6 @@ where python >nul 2>nul || (echo Python не найден. Установите 
 if not exist .venv python -m venv .venv || (echo Не удалось создать .venv & pause & exit /b 1)
 call .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
-python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu || (echo Ошибка установки torch & pause & exit /b 1)
 python -m pip install -r requirements.txt || (echo Ошибка установки зависимостей & pause & exit /b 1)
 python tools\download_models.py || (echo Ошибка загрузки моделей & pause & exit /b 1)
 echo.

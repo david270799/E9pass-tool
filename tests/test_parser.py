@@ -182,3 +182,10 @@ def test_wrap_hyphen_lost_or_misread_is_still_joined():
         assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI", tail
         lines = [f"명 KARIMOV JASUR {tail}", "틀 AKHTIYOR UGLI", "곳 UZBEKISTAN"]
         assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI", tail
+
+
+def test_label_noise_before_surname_is_dropped():
+    lines = ["KOR 울늘을 RCSIUENCE CRRD", "841002-5760118", "MY KARIMOV JASUR", "ADKHAMJONOVICH",
+             "국기/ 시례 UZBEKISTAN"]
+    assert parse_card(lines).name == "KARIMOV JASUR ADKHAMJONOVICH"
+    assert parse_card(["성명 Name", "LE VAN AN", "VIETNAM"]).name == "LE VAN AN"

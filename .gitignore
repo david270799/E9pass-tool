@@ -5,6 +5,7 @@ build/
 dist/
 *.spec
 models/*.pth
+models/*.onnx
 # Личные данные никогда не коммитим
 *.xlsx
 input/
