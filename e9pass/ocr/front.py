@@ -73,7 +73,7 @@ COUNTRIES_KO = {
 
 # Слова с карты, которые не могут быть именем.
 _NOT_NAME_WORDS = {
-    "RESIDENCE", "CARD", "REPUBLIC", "OF", "KOREA", "NAME", "STATUS",
+    "RESIDENCE", "CARD", "REPUBLIC", "OF", "KOREA", "KOR", "NAME", "STATUS",
     "COUNTRY", "REGION", "REGISTRATION", "NO", "ISSUE", "DATE", "SEX",
     "ALIEN", "IMMIGRATION", "OFFICE", "SERVICE", "MINISTRY", "JUSTICE",
     "PERMANENT", "RESIDENT", "NATIONALITY", "CHIEF", "AND", "FOREIGN",
@@ -280,6 +280,27 @@ def name_suffix_hits(text: str) -> int:
 _PATRONYMIC_ENDINGS = ("ICH", "OVNA", "EVNA")
 
 
+def respace_with_hint(name: str, hint: str) -> str:
+    """OCR склеил слова («IRKINOVASILBEK BAHTIYOR UGLI»), а архив назван «IRKINOV ASILBEK.zip» —
+    расставляем пробелы по имени архива. Если буквы не совпадают, имя не меняется."""
+    hint_words = re.findall(r"[A-Z]+", (hint or "").upper())
+    if len(hint_words) < 2:
+        return name
+    joined = "".join(hint_words)
+    letters = name.replace(" ", "")
+    if not letters.startswith(joined) or " ".join(hint_words) in name:
+        return name
+    # сколько слов OCR-имени покрывает склейка из архива
+    consumed, words = "", name.split()
+    for i, w in enumerate(words):
+        consumed += w
+        if consumed == joined:
+            return " ".join(hint_words + words[i + 1:])
+        if len(consumed) > len(joined):
+            break
+    return name
+
+
 def _drop_label_noise(name: str) -> str:
     """Обрывок подписи «성명 Name» перед фамилией: «MY ABILOV BOBORAKHIM» -> «ABILOV BOBORAKHIM».
 
@@ -408,10 +429,11 @@ def find_name(lines: List[str], country: str = "") -> str:
     best, best_key = "", (0, 0)
     for i, line in enumerate(lines):
         raw = _strip_korean_prefix(line)
-        if raw != raw.upper() or re.search(r"\d", raw):
+        if re.search(r"\d", raw):
             continue
-        cand = _latin_words(raw)
-        if not _is_name_like(cand) or cand == country:
+        # подпись «Name» мелкими буквами рядом с именем не мешает: берем только слова ЗАГЛАВНЫМИ
+        cand = _name_line(raw, country) if raw != raw.upper() else _latin_words(raw)
+        if not cand or not _is_name_like(cand) or cand == country:
             continue
         if cand.endswith("-") or name_suffix_hits(cand):
             cand = _with_continuation(cand, lines[i + 1:], country)

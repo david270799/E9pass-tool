@@ -189,3 +189,18 @@ def test_label_noise_before_surname_is_dropped():
              "국기/ 시례 UZBEKISTAN"]
     assert parse_card(lines).name == "KARIMOV JASUR ADKHAMJONOVICH"
     assert parse_card(["성명 Name", "LE VAN AN", "VIETNAM"]).name == "LE VAN AN"
+
+
+def test_kor_logo_is_not_a_name_and_lowercase_label_is_ignored():
+    lines = ["KOR", "KOR 외국인등록증 RESIDENCE CARD", "930820-5760118", "Neme KARIMOV ASILBEK",
+             "BAHTIYOR UGLI", "국가지역 UZBEKISTAN"]
+    assert parse_card(lines).name == "KARIMOV ASILBEK BAHTIYOR UGLI"
+
+
+def test_respace_name_with_archive_name():
+    from e9pass.ocr.front import respace_with_hint
+    assert respace_with_hint("IRKINOVASILBEK BAHTIYOR UGLI", "KARIMOV ASILBEK") == "IRKINOVASILBEK BAHTIYOR UGLI"
+    assert respace_with_hint("KARIMOVASILBEK BAHTIYOR UGLI", "KARIMOV ASILBEK") == "KARIMOV ASILBEK BAHTIYOR UGLI"
+    assert respace_with_hint("KARIMOVASILBEK BAHTIYOR UGLI", "KARIMOV_ASILBEK (2)") == "KARIMOV ASILBEK BAHTIYOR UGLI"
+    assert respace_with_hint("KARIMOV ASILBEK BAHTIYOR UGLI", "KARIMOV ASILBEK") == "KARIMOV ASILBEK BAHTIYOR UGLI"
+    assert respace_with_hint("NGUYEN VAN AN", "archive1") == "NGUYEN VAN AN"

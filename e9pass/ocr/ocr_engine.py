@@ -39,10 +39,12 @@ def load_image(path) -> Image.Image:
     return img.convert("RGB")
 
 
-def resize_max(img: Image.Image, target: int = 1800) -> Image.Image:
+def resize_max(img: Image.Image, target: int = 1800, upscale: bool = False) -> Image.Image:
+    """Большие фото уменьшаются до target. Маленькие растягиваются только при upscale=True:
+    RapidOCR на растянутых иногда теряет строки, поэтому это лишь вторая попытка."""
     w, h = img.size
     scale = target / max(w, h)
-    if 0.9 < scale < 1.1:
+    if 0.9 < scale < 1.1 or (scale > 1 and not upscale):
         return img
     return img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
 
@@ -141,25 +143,46 @@ def crop_card(img: Image.Image) -> Image.Image:
 
 
 def group_lines(results) -> List[str]:
-    """Собирает фрагменты OCR в строки по вертикальному положению."""
+    """Собирает фрагменты OCR в строки.
+
+    Фото часто снято под наклоном: рамки строк наклонены, и соседние ряды таблицы перекрываются
+    по высоте. Поэтому центры рамок поворачиваются на общий наклон текста, и в строку попадают
+    фрагменты с близкой «выпрямленной» высотой. Вертикальные надписи (имя на краю карты) пропускаются.
+    """
+    import math
+
     items = []
     for box, text, _conf in results:
-        ys = [p[1] for p in box]
-        xs = [p[0] for p in box]
-        items.append((min(ys), max(ys), min(xs), text))
-    items.sort(key=lambda t: (t[0] + t[1]) / 2)
+        pts = [(float(p[0]), float(p[1])) for p in box]
+        tl, tr, br, bl = pts[0], pts[1], pts[2], pts[3]
+        w = math.dist(tl, tr)
+        h = (math.dist(tl, bl) + math.dist(tr, br)) / 2
+        if h > 1.5 * w and len(text.strip()) >= 4:
+            continue  # вертикальный текст
+        cx = sum(p[0] for p in pts) / 4
+        cy = sum(p[1] for p in pts) / 4
+        angle = math.atan2(tr[1] - tl[1], tr[0] - tl[0]) if w > 2 * h else None
+        items.append([cx, cy, max(h, 1.0), angle, text])
+    if not items:
+        return []
+    angles = sorted(a for *_, a, _t in items if a is not None and abs(a) < 0.5)
+    skew = angles[len(angles) // 2] if angles else 0.0
+    cos, sin = math.cos(skew), math.sin(skew)
+    for it in items:
+        cx, cy = it[0], it[1]
+        it[0], it[1] = cx * cos + cy * sin, cy * cos - cx * sin  # выпрямленные координаты
+    items.sort(key=lambda t: t[1])
     lines: List[list] = []
     for it in items:
-        center = (it[0] + it[1]) / 2
         if lines:
             last = lines[-1]
-            top = sum(i[0] for i in last) / len(last)
-            bottom = sum(i[1] for i in last) / len(last)
-            if top <= center <= bottom:
+            mean_y = sum(i[1] for i in last) / len(last)
+            heights = sorted(i[2] for i in last)
+            if abs(it[1] - mean_y) < 0.5 * min(heights[len(heights) // 2], it[2]):
                 last.append(it)
                 continue
         lines.append([it])
-    return [" ".join(i[3] for i in sorted(line, key=lambda t: t[2])) for line in lines]
+    return [" ".join(i[4] for i in sorted(line, key=lambda t: t[0])) for line in lines]
 
 
 def _score(results) -> float:
@@ -209,9 +232,9 @@ class OcrEngine:
     def lines(self, img: Image.Image) -> List[str]:
         return group_lines(self.readtext(img))
 
-    def lines_best_rotation(self, img: Image.Image) -> List[str]:
+    def lines_best_rotation(self, img: Image.Image, upscale: bool = False) -> List[str]:
         """Текст документа; если распознано плохо — пробует повороты и берет лучший."""
-        img = resize_max(img)
+        img = resize_max(img, upscale=upscale)
         best = self.readtext(img)
         if _score(best) < 60:
             for angle in (90, 270, 180):
@@ -222,16 +245,21 @@ class OcrEngine:
 
     def read_front(self, path) -> Tuple[CardData, List[str]]:
         """Лицевая сторона ID: (поля карты, сырые строки)."""
-        img = resize_max(crop_card(load_image(path)))
+        card = crop_card(load_image(path))
         best: Optional[Tuple[CardData, List[str]]] = None
-        for angle in (0, 90, 270, 180):
-            rotated = img.rotate(angle, expand=True) if angle else img
-            lines = self.lines(rotated)
-            data = parse_card(lines)
-            if best is None or data.filled_count() > best[0].filled_count():
-                best = (data, lines)
-            if data.reg_no and data.filled_count() >= 4:
-                break
+        variants = [resize_max(card)]
+        if max(card.size) < 1600:  # маленькое фото — вторая попытка в увеличенном виде
+            variants.append(resize_max(card, upscale=True))
+        for img in variants:
+            for angle in (0, 90, 270, 180):
+                rotated = img.rotate(angle, expand=True) if angle else img
+                lines = self.lines(rotated)
+                data = parse_card(lines)
+                key = (bool(data.reg_no), data.filled_count())  # номер ARC важнее остальных полей
+                if best is None or key > (bool(best[0].reg_no), best[0].filled_count()):
+                    best = (data, lines)
+                if data.reg_no and data.filled_count() >= 4:
+                    return best
         return best
 
     def read_image_lines(self, path) -> List[str]:

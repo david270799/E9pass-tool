@@ -21,7 +21,7 @@ from .db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT, Client, D
 from .ocr import back as back_ocr
 from .ocr import bank as bank_ocr
 from .ocr import detect
-from .ocr.front import normalize_name, parse_card
+from .ocr.front import normalize_name, parse_card, respace_with_hint
 from .ocr.ocr_engine import IMAGE_EXTENSIONS, OcrEngine
 
 Progress = Callable[[str], None]
@@ -127,7 +127,7 @@ def intake_archive(db: Database, period: str, archive_path: Path, engine: Option
         if f.suffix.lower() not in IMAGE_EXTENSIONS:
             result.photos.append(PhotoResult(f, "", "не фото"))
 
-    fields, warnings = _extract_fields(engine, result.photos, progress)
+    fields, warnings = _extract_fields(engine, result.photos, progress, Path(archive_path).stem)
     if any(p.doc_type == "" for p in result.photos):
         warnings.append("есть нераспознанные файлы")
 
@@ -197,8 +197,10 @@ def _read_front(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None
 
 def _read_back(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None):
     from .ocr.ocr_engine import crop_card, load_image
-    lines2 = engine.lines_best_rotation(crop_card(load_image(path)))
-    addr, w = back_ocr.parse_back(lines2)
+    card = crop_card(load_image(path))
+    addr, w = back_ocr.parse_back(engine.lines_best_rotation(card))
+    if not addr and max(card.size) < 1600:  # маленькое фото — вторая попытка в увеличенном виде
+        addr, w = back_ocr.parse_back(engine.lines_best_rotation(card, upscale=True))
     if not addr and lines:
         addr, w = back_ocr.parse_back(lines)
     return addr, w
@@ -208,7 +210,8 @@ def _read_bank(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None)
     return bank_ocr.parse_bank(lines if lines is not None else engine.read_image_lines(path))
 
 
-def _extract_fields(engine: OcrEngine, photos: List[PhotoResult], progress: Progress = _noop):
+def _extract_fields(engine: OcrEngine, photos: List[PhotoResult], progress: Progress = _noop,
+                    name_hint: str = ""):
     """Поля клиента из фото по их типам: (fields, warnings)."""
     fields, warnings = {}, []
     fronts = [p for p in photos if p.doc_type == detect.FRONT]
@@ -224,7 +227,7 @@ def _extract_fields(engine: OcrEngine, photos: List[PhotoResult], progress: Prog
                     p.doc_type, p.reason, p.lines, card = detect.FRONT, "OCR: номер ARC", lines2, card2
                     break
     if card:
-        fields.update(full_name=card.name, arc_number=card.reg_no,
+        fields.update(full_name=respace_with_hint(card.name, name_hint), arc_number=card.reg_no,
                       birth_date=card.reg_no[:6] if card.reg_no else "", nationality=card.country)
         warnings += [w for w in card.warnings if w.startswith(_FRONT_WARN_KEEP)]
     else:
@@ -257,7 +260,9 @@ def reread_client(db: Database, client_id: int, engine: Optional[OcrEngine] = No
     docs = [d for d in db.documents(client_id) if not d.is_processed_scan]
     photos = [PhotoResult(d.path, d.doc_type, d.detected_by) for d in docs
               if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK)]
-    fields, warnings = _extract_fields(engine, photos, progress)
+    client = db.client(client_id)
+    hint = Path(client.source_archive).stem if client and client.source_archive else ""
+    fields, warnings = _extract_fields(engine, photos, progress, hint)
     if any(not d.doc_type for d in docs):
         warnings.append("есть нераспознанные файлы")
     db.update_client(client_id, **fields)

@@ -52,3 +52,33 @@ def test_back_stamp_glued_to_next_row():
     lines = ["체류지 변경신고", "2023.05.12 경기도 수원시 팔달구 효원로 123",
              "팔달구정장 2024.02.01 경기도 화성시 향남읍 발안로 45, 101동 202호"]
     assert parse_back(lines)[0] == "경기도 화성시 향남읍 발안로 45, 101동 202호"
+
+
+def test_tilted_table_rows_and_wrapped_road_name():
+    from e9pass.ocr.back import parse_back
+    lines = ["체류지(Address)", "신고일 체류지", "2022.08.03 경상남도 김해시 진례면 코모로341", "번길 47",
+             "2024.05.23 경상북도 영천시 금호읍 원제2길", "16-8,101동1514호(문성모닝타운)", "2025.07 18 김해"]
+    assert parse_back(lines)[0] == "경상북도 영천시 금호읍 원제2길 16-8, 101동 1514호 (문성모닝타운)"
+    lines = ["2024.03.20 신고일 경상남도 밀양시 하남읍 시동3리2 체류지 KARIMOV ASILBEK BAHT", "길9-1.504호"]
+    assert parse_back(lines)[0] == "경상남도 밀양시 하남읍 시동3리2길 9-1, 504호"
+
+
+def test_address_spacing_restored():
+    from e9pass.ocr.back import format_address
+    assert format_address("경상남도밀양시하남읍시동3리2길9-1,504호") == "경상남도 밀양시 하남읍 시동3리2길 9-1, 504호"
+    assert format_address("대구광역시달서구 월배로 12") == "대구광역시 달서구 월배로 12"
+    assert format_address("전라남도진도군 진도읍 남문길 3") == "전라남도 진도군 진도읍 남문길 3"
+    assert format_address("경상남도 김해시 진례면 코모로341번길 47") == "경상남도 김해시 진례면 코모로341번길 47"
+
+
+def test_group_lines_on_tilted_photo():
+    from e9pass.ocr.ocr_engine import group_lines
+    import math
+    def box(x, y, w, h, a):  # наклоненная рамка
+        c, s = math.cos(a), math.sin(a)
+        return [(x, y), (x + w * c, y + w * s), (x + w * c - h * s, y + w * s + h * c), (x - h * s, y + h * c)]
+    a = 0.06  # ~3.5°
+    res = [(box(10, 100, 200, 30, a), "2024.05.23", 1), (box(260, 100 + 250 * math.sin(a), 500, 30, a), "경상북도", 1),
+           (box(10, 145, 200, 30, a), "2025.07.18", 1), (box(260, 160 + 250 * math.sin(a), 400, 30, a), "16-8", 1),
+           (box(900, 50, 30, 400, 0), "KARIMOV ASILBEK", 1)]
+    assert group_lines(res) == ["2024.05.23 경상북도", "2025.07.18 16-8"]
