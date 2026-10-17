@@ -205,6 +205,7 @@ def find_issuer(lines: List[str]) -> str:
 # ---------------------------------------------------------------- страна
 
 def _latin_words(line: str) -> str:
+    line = re.sub(r"(?<=[A-Za-z])\s*[–—~_=]+\s*$", "-", line)  # дефис переноса, прочитанный как тире
     return _clean(re.sub(r"[^A-Za-z\- ]", " ", line)).upper()
 
 
@@ -323,8 +324,11 @@ def normalize_name(name: str) -> str:
 
     Настоящий дефис в имени (AL-RASHID) пишется без пробела и не трогается.
     """
-    name = re.sub(r"([A-Z])\s*-\s+([A-Z])", r"\1\2", name.strip())
-    name = re.sub(r"-+$", "", name).strip()
+    name = re.sub(r"([A-Z])\s*[-–—~_=]\s+([A-Z])", r"\1\2", name.strip())
+    name = re.sub(r"[-–—~_=]+$", "", name).strip()
+    # Дефис переноса OCR иногда теряет: «JOHONGIR B AKHRITDIN». Одиночная буква внутри имени
+    # не бывает отдельным словом — приклеиваем ее к следующему: «BAKHRITDIN».
+    name = re.sub(r"(?<=[A-Z] )([A-Z])\s+(?=[A-Z]{2})", r"\1", name)
     return re.sub(r"\s+", " ", name)
 
 
@@ -341,6 +345,7 @@ def _name_line(line: str, country: str) -> str:
     line = _strip_korean_prefix(line)
     if re.search(r"[가-힣]", line):
         return ""
+    line = re.sub(r"(?<=[A-Za-z])\s*[-–—~_=]+\s*$", "-", line)
     words = re.findall(r"(?<![A-Za-z])[A-Z][A-Z'\-]*(?![A-Za-z])", line)
     cand = " ".join(words)
     if len(cand.replace(" ", "")) < 2 or not _is_name_like(cand):
@@ -366,7 +371,7 @@ def _with_continuation(first: str, rest_lines: List[str], country: str) -> str:
         cont = _name_line(nxt, country)
         if not cont:
             break
-        name = f"{name[:-1]}{cont}" if name.endswith("-") else f"{name} {cont}"
+        name = f"{name.rstrip('-').rstrip()}{cont}" if name.endswith("-") else f"{name} {cont}"
     return normalize_name(name)
 
 

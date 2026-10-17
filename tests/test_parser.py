@@ -171,3 +171,14 @@ def test_patronymic_always_last():
 def test_swapped_name_lines_from_ocr():
     lines = ["성명 Name", "TOJIEVICH", "KARIMOV UMID", "UZBEKISTAN"]
     assert parse_card(lines).name == "KARIMOV UMID TOJIEVICH"
+
+
+def test_wrap_hyphen_lost_or_misread_is_still_joined():
+    from e9pass.ocr.front import normalize_name
+    assert normalize_name("KARIMOV JASUR B AKHTIYOR UGLI") == "KARIMOV JASUR BAKHTIYOR UGLI"
+    assert normalize_name("KARIMOV JASUR B - AKHTIYOR UGLI") == "KARIMOV JASUR BAKHTIYOR UGLI"
+    for tail in ["B-", "B -", "B—", "B~", "B", "B_"]:
+        lines = ["성명 Name", f"KARIMOV JASUR {tail}", "AKHTIYOR UGLI", "UZBEKISTAN"]
+        assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI", tail
+        lines = [f"명 KARIMOV JASUR {tail}", "틀 AKHTIYOR UGLI", "곳 UZBEKISTAN"]
+        assert parse_card(lines).name == "KARIMOV JASUR BAKHTIYOR UGLI", tail
