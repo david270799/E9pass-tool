@@ -106,3 +106,17 @@ def test_name_continuation_with_label_noise():
     # реальный вывод OCR: подпись «Name» прочитана как «Yamc», в конце шум «7»
     lines = ["성명 EGAMBERDIEV AZAM-", "Yamc AT PULATOVICH 7", "국가 지역 UZBEKISTAN"]
     assert parse_card(lines).name == "EGAMBERDIEV AZAMAT PULATOVICH"
+
+
+def test_card_title_with_ocr_errors_is_not_a_name():
+    # заголовок старой карты прочитан с ошибками, подпись «성명» не распознана
+    lines = ["외국인등록증", "ALIEN REGISTRATON CARO", "940312-5234567", "RAKHIMOV SHERZOD", "UZBEKISTAN"]
+    assert parse_card(lines).name == "RAKHIMOV SHERZOD"
+    for title in ["ALLEN REGISTRATION CARD", "REGISTRATIONCARD", "RESIDENSE CARD", "ALIEN CARO"]:
+        assert parse_card(["외국인등록증", title, "UZBEKISTAN"]).name == ""
+
+
+def test_name_similar_to_title_word_is_kept():
+    assert parse_card(["성명 Name", "ALIEV RUSTAM", "UZBEKISTAN"]).name == "ALIEV RUSTAM"
+    assert parse_card(["ALIEN REGISTRATION CARD", "ALIEV RUSTAM", "UZBEKISTAN"]).name == "ALIEV RUSTAM"
+    assert parse_card(["성명 Name", "CARDENAS RESIDOV", "KAZAKHSTAN"]).name == "CARDENAS RESIDOV"

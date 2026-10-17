@@ -235,13 +235,37 @@ def find_country(lines: List[str]):
 
 # ---------------------------------------------------------------- имя
 
+# Заголовок карты («ALIEN REGISTRATION CARD», «RESIDENCE CARD») OCR читает с ошибками —
+# REGISTRATON, RESIDENSE, CARO — и точное сравнение со словарем его пропускает.
+_TITLE_LONG = ("REGISTRATION", "IMMIGRATION", "RESIDENCE", "REPUBLIC", "NATIONALITY", "PERMANENT")
+_TITLE_PARTS = ("REGIST", "RESIDEN", "IMMIGR", "REPUBL", "KOREA")
+_TITLE_SHORT = ("ALIEN", "CARD", "KOREA")
+
+
+def _similar(word: str, ref: str) -> float:
+    return SequenceMatcher(None, word, ref).ratio()
+
+
+def _is_card_title(words: List[str]) -> bool:
+    hits = 0
+    for w in words:
+        if any(part in w for part in _TITLE_PARTS):
+            return True
+        if len(w) >= 7 and any(_similar(w, t) >= 0.8 for t in _TITLE_LONG):
+            return True
+        if len(w) >= 3 and any(_similar(w, t) >= 0.75 for t in _TITLE_SHORT):
+            hits += 1
+    # Одно похожее слово бывает в имени (ALIEV ≈ ALIEN), два — уже заголовок.
+    return hits >= 2
+
+
 def _is_name_like(text: str) -> bool:
     words = text.split()
     if not words or len(text) < 3:
         return False
     if not re.fullmatch(r"[A-Z][A-Z\-' ]+", text):
         return False
-    if any(w in _NOT_NAME_WORDS for w in words):
+    if any(w in _NOT_NAME_WORDS for w in words) or _is_card_title(words):
         return False
     if text in COUNTRIES:
         return False
