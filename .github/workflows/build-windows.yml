@@ -34,6 +34,9 @@ jobs:
       - name: Download OCR models
         run: python tools/download_models.py
 
+      - name: Stamp version
+        run: python tools/stamp_version.py
+
       - name: Build app (PyInstaller)
         run: >
           pyinstaller --noconfirm --windowed --name E9pay

@@ -799,3 +799,60 @@ def build_batch_print(db: Database, client_ids: List[int], out_path: Path) -> Pa
 def mark_printed(db: Database, client_ids: List[int]):
     for cid in client_ids:
         db.update_client(cid, printed=1)
+
+
+# ---------------------------------------------------------------- отчет OCR
+
+def ocr_report(db: Database, client_id: int, engine: Optional[OcrEngine] = None,
+               progress: Progress = _noop) -> str:
+    """Текстовый отчет для разбора ошибок распознавания: что OCR увидел на каждом фото клиента
+    (строки сверху вниз) и что программа из этого взяла. Номера скрываются в окне отчета."""
+    import platform
+    from datetime import datetime
+
+    from . import __version__
+    from .ocr.ocr_engine import crop_card, load_image
+
+    engine = engine or OcrEngine.get()
+    c = db.client(client_id)
+    out = [f"=== E9pay · отчет OCR · {datetime.now():%Y-%m-%d %H:%M} ===",
+           f"Программа {__version__} · OCR RapidOCR (PaddleOCR) · {platform.system()} {platform.release()}",
+           f"Архив: {c.source_archive or '—'}", "",
+           "--- В карточке сейчас ---",
+           f"ФИО: {c.full_name}", f"ARC: {c.arc_number}", f"Гражданство: {c.nationality}",
+           f"Адрес: {c.registered_address}", f"Банк: {c.bank_name} {c.account_number}"]
+    titles = {BUILTIN_FRONT: "ЛИЦО ID", BUILTIN_BACK: "ОБОРОТ ID", BUILTIN_BANK: "통장사본"}
+    docs = [d for d in db.documents(client_id) if d.doc_type in titles and not d.is_processed_scan]
+    for i, d in enumerate(docs, 1):
+        progress(f"Отчет OCR {i}/{len(docs)}: {d.path.name}")
+        out += ["", f"--- {titles[d.doc_type]} · {d.original_name or d.path.name} ---"]
+        try:
+            img = load_image(d.path)
+            out.append(f"Размер фото: {img.width}×{img.height}")
+            if d.doc_type == BUILTIN_FRONT:
+                card, lines = engine.read_front(d.path)
+                result = [f"ФИО: {card.name}", f"ARC: {card.reg_no}", f"Страна: {card.country}",
+                          f"Дата выдачи: {card.issue_date}"]
+            elif d.doc_type == BUILTIN_BACK:
+                lines = engine.lines_best_rotation(crop_card(img))
+                result = [f"Адреса (сверху вниз): {back_ocr.parse_addresses(lines)}",
+                          f"Взят: {back_ocr.parse_back(lines)[0]}"]
+            else:
+                lines = engine.read_image_lines(d.path)
+                bank, acc, _w = bank_ocr.parse_bank(lines)
+                result = [f"Банк: {bank}", f"Счет: {acc}"]
+        except Exception as e:  # noqa: BLE001 — отчет должен собраться и с битым фото
+            out.append(f"Ошибка: {e}")
+            continue
+        out.append("Строки OCR:")
+        out += [f"  {n:>2}| {line}" for n, line in enumerate(lines, 1)]
+        out.append("Разбор:")
+        out += [f"  {r}" for r in result]
+    return "\n".join(out)
+
+
+def mask_report(text: str) -> str:
+    """Скрывает вторую часть номера ARC (950101-5******) и номера счетов (оставляя 3 последние цифры)."""
+    text = re.sub(r"(\b\d{6}\s*[-–~]?\s*)(\d)\d{6}\b", r"\1\2******", text)
+    text = re.sub(r"\b\d[\d\-]{7,}(\d{3})\b", lambda m: "*" * (len(m.group(0)) - 3) + m.group(1), text)
+    return text

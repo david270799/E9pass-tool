@@ -30,13 +30,15 @@ class ClientPage(QWidget):
         back.setToolTip("Вернуться к списку клиентов")
         back.setStyleSheet("QPushButton{font-size:15px;font-weight:700;min-height:40px;padding:0 18px;}")
         self.btn_folder = button("Открыть папку", on_click=lambda: open_path(self.client().folder))
+        self.btn_report = button("Отчет OCR", on_click=self.ocr_report)
+        self.btn_report.setToolTip("Строки, которые увидел OCR, и что из них взято — чтобы отправить разработчику")
         self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
         self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
         self.btn_delete = button("Удалить клиента", on_click=self.delete_client)
         self.btn_delete.setStyleSheet(f"QPushButton{{border-color:{theme.ACCENT};color:{theme.ACCENT};}}")
         self.btn_delete.setToolTip("Удалить клиента и все его файлы из программы")
         header = hbox(vbox(hbox(back, self.crumb, None, spacing=12), hbox(self.name, self.badge_host, None, spacing=14),
-                           spacing=2), None, self.btn_delete, self.btn_folder, self.btn_zip, self.btn_master)
+                           spacing=2), None, self.btn_delete, self.btn_report, self.btn_folder, self.btn_zip, self.btn_master)
 
         # --- профиль
         self.profile = frame("panel")
@@ -342,14 +344,28 @@ class ClientPage(QWidget):
             self.state.data_changed.emit()
             self.state.navigate.emit("dashboard")
 
+    def ocr_report(self):
+        c = self.client()
+        if not c:
+            return
+        self._busy("Готовлю отчет OCR…", "распознаю фото заново")
+
+        def done(text):
+            self._idle()
+            from .ocr_report import OcrReportDialog
+            OcrReportDialog(text, c.full_name, self).exec()
+
+        run_task(services.ocr_report, self.state.db, c.id, on_done=done, on_progress=self._progress,
+                 on_fail=lambda err: (self._idle(), QMessageBox.warning(self, "Отчет OCR", err)))
+
     def _busy(self, title, on_progress_text=""):
         self.busy.start(title, on_progress_text)
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.drop):
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop):
             w.setEnabled(False)
 
     def _idle(self):
         self.busy.stop()
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.drop):
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop):
             w.setEnabled(True)
         self.state.busy_changed.emit("")
 
