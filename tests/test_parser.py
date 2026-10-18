@@ -232,3 +232,9 @@ def test_front_orientation_by_line_order():
     good = ["KOR 외국인등록증", "961109-5710035", "성명 KARIMOV", "UZBEKISTAN", "CHIEF, GIMHAE BRANCH OFFICE"]
     assert front_orientation_ok(good) == 1
     assert front_orientation_ok(list(reversed(good))) == 0
+
+
+def test_name_starts_above_english_label():
+    lines = ["KOR 외국인등록증", "RESIDENCE CARD", "외국인등록번증 930820-5760118", "Registralion No.",
+             "R KARIMOV ASILBEK", "Name BAHTIYOR UGLI", "국가지역 UZBEKISTAN", "CHIEF, GIMHAE BRANCH OFFICE"]
+    assert parse_card(lines).name == "KARIMOV ASILBEK BAHTIYOR UGLI"

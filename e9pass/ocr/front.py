@@ -463,6 +463,9 @@ def _cannot_start_word(text: str) -> bool:
             and w[:2] not in _WORD_STARTS)
 
 
+_HEADER_LINE = re.compile(r"RESIDENCE|Registration|외국인등록|\d{6}", re.I)
+
+
 def find_name(lines: List[str], country: str = "") -> str:
     # 1) Подпись "성명" / "Name": имя в той же строке после неё или в следующей.
     for i, line in enumerate(lines):
@@ -473,6 +476,12 @@ def find_name(lines: List[str], country: str = "") -> str:
         # OCR часто искажает саму подпись «Name» (Namne, Narne) — убираем похожие слова.
         rest = " ".join(w for w in _latin_words(m.group(2)).split()
                         if SequenceMatcher(None, w, "NAME").ratio() < 0.6)
+        # Английская подпись «Name» стоит под корейской «성명» — у второй строки имени. Если «성명»
+        # не распознана, а строкой выше похожее на имя — имя начинается там: «IRKINOV ASILBEK» / «Name BAHTIYOR UGLI».
+        if m.group(1).lower() == "name" and i > 0:
+            prev = _drop_label_noise(_name_line(lines[i - 1], country))
+            if prev and not _HEADER_LINE.search(lines[i - 1]):
+                return _with_continuation(prev, lines[i:], country)
         if _is_name_like(rest) and rest != country:
             return _with_continuation(rest, lines[i + 1:], country)
         for j in range(i + 1, min(i + 3, len(lines))):

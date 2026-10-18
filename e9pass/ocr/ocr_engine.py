@@ -27,7 +27,10 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", "
 DET_MODEL = "PP-OCRv6_det_small.onnx"
 CLS_MODEL = "ch_ppocr_mobile_v2.0_cls_mobile.onnx"
 REC_MODEL = "korean_PP-OCRv5_rec_mobile.onnx"
-MODEL_FILES = (DET_MODEL, CLS_MODEL, REC_MODEL)
+# Латиница и цифры (ФИО, номер ARC, страна): корейская модель теряет в них пробелы и путает буквы,
+# поэтому такие строки дочитывает латинская модель PP-OCRv6.
+LAT_MODEL = "PP-OCRv6_rec_small.onnx"
+MODEL_FILES = (DET_MODEL, CLS_MODEL, REC_MODEL, LAT_MODEL)
 
 
 def models_dir() -> Path:
@@ -217,6 +220,26 @@ def rapidocr_params() -> dict:
     return params
 
 
+def latin_params() -> dict:
+    from rapidocr import ModelType, OCRVersion
+
+    params = {"Global.log_level": "error", "Rec.ocr_version": OCRVersion.PPOCRV6, "Rec.model_type": ModelType.SMALL}
+    mdir = models_dir()
+    if all((mdir / f).exists() for f in MODEL_FILES):
+        params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
+                       "Rec.model_path": str(mdir / LAT_MODEL)})
+    return params
+
+
+_HANGUL = re.compile(r"[가-힣]")
+_CJK = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def _needs_latin(text: str) -> bool:
+    """Строка без корейских букв, с латиницей или цифрами — ее лучше читает латинская модель."""
+    return not _HANGUL.search(text) and bool(re.search(r"[A-Za-z]{2}|\d{3}", text))
+
+
 class OcrEngine:
     """Один экземпляр на программу; модели загружаются при первом использовании."""
 
@@ -227,6 +250,7 @@ class OcrEngine:
         from rapidocr import RapidOCR  # импорт только при создании
 
         self.reader = RapidOCR(params=rapidocr_params())
+        self.latin = RapidOCR(params=latin_params())
         self._run_lock = threading.Lock()
 
     @classmethod
@@ -236,15 +260,38 @@ class OcrEngine:
                 cls._instance = cls()
             return cls._instance
 
-    def readtext(self, img: Image.Image):
-        """[(4 точки рамки, текст, уверенность)] — фрагменты текста на изображении."""
+    def readtext(self, img: Image.Image, latin: bool = False):
+        """[(4 точки рамки, текст, уверенность)] — фрагменты текста на изображении.
+        latin=True — строки с латиницей и цифрами дочитывает латинская модель (лицо ID)."""
         with self._run_lock:
             # режимы указываем явно: reread_reg_no вызывает распознавание без поиска строк
             res = self.reader(np.array(img.convert("RGB"))[:, :, ::-1],  # RapidOCR ждет BGR, как OpenCV
                               use_det=True, use_cls=True, use_rec=True)
         if res is None or res.boxes is None or res.txts is None:
             return []
-        return [(box.tolist(), txt, float(score)) for box, txt, score in zip(res.boxes, res.txts, res.scores)]
+        out = [(box.tolist(), txt, float(score)) for box, txt, score in zip(res.boxes, res.txts, res.scores)]
+        return [self._latin_reread(img, item) for item in out] if latin else out
+
+    def _latin_reread(self, img: Image.Image, item):
+        """Строку с латиницей / цифрами перечитать латинской моделью (с небольшим запасом вокруг)."""
+        box, text, score = item
+        if not _needs_latin(text):
+            return item
+        xs, ys = [p[0] for p in box], [p[1] for p in box]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        if h > 1.5 * w or h < 4:
+            return item  # вертикальная надпись или мусор
+        pad = 0.15 * h
+        crop = img.crop((max(0, min(xs) - pad), max(0, min(ys) - pad),
+                         min(img.width, max(xs) + pad), min(img.height, max(ys) + pad)))
+        with self._run_lock:
+            res = self.latin(np.array(crop.convert("RGB"))[:, :, ::-1], use_det=False, use_cls=False, use_rec=True)
+        txt = (res.txts or [""])[0] if res is not None else ""
+        conf = float((res.scores or [0])[0]) if res is not None and res.scores else 0.0
+        # латинская модель знает и иероглифы: «KOR» на голограмме может стать «福» — такое не берем
+        if not txt.strip() or _CJK.search(txt) or conf < 0.5:
+            return item
+        return box, txt, max(score, conf)
 
     def lines(self, img: Image.Image) -> List[str]:
         return group_lines(self.readtext(img))
@@ -262,7 +309,7 @@ class OcrEngine:
 
     def _front_pass(self, img: Image.Image, angle: int):
         rotated = img.rotate(angle, expand=True) if angle else img
-        raw = self.readtext(rotated)
+        raw = self.readtext(rotated, latin=True)
         lines = group_lines(raw)
         return angle, parse_card(lines), lines, rotated, raw
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from e9pass.ocr.ocr_engine import CLS_MODEL, DET_MODEL, REC_MODEL, models_dir  # noqa: E402
+from e9pass.ocr.ocr_engine import CLS_MODEL, DET_MODEL, LAT_MODEL, REC_MODEL, models_dir  # noqa: E402
 
 # Модель корейского распознавания не входит в пакет rapidocr — берем ее с хранилища RapidOCR
 # (та же версия, что в requirements.txt) и проверяем контрольную сумму.
@@ -53,8 +53,8 @@ def main():
 
     target = models_dir()
     target.mkdir(parents=True, exist_ok=True)
-    bundled = Path(rapidocr.__file__).parent / "models"  # поиск строк и поворот входят в пакет
-    for name in (DET_MODEL, CLS_MODEL):
+    bundled = Path(rapidocr.__file__).parent / "models"  # поиск строк, поворот и латиница входят в пакет
+    for name in (DET_MODEL, CLS_MODEL, LAT_MODEL):
         if not (target / name).exists():
             shutil.copy2(bundled / name, target / name)
     download_rec(target)
