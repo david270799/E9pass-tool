@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import threading
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -14,7 +15,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .. import config
-from .front import CardData, parse_card
+from .front import CardData, parse_card, reg_no_checksum_ok
 
 try:  # фото с iPhone (.heic)
     from pillow_heif import register_heif_opener
@@ -224,7 +225,9 @@ class OcrEngine:
     def readtext(self, img: Image.Image):
         """[(4 точки рамки, текст, уверенность)] — фрагменты текста на изображении."""
         with self._run_lock:
-            res = self.reader(np.array(img.convert("RGB"))[:, :, ::-1])  # RapidOCR ждет BGR, как OpenCV
+            # режимы указываем явно: reread_reg_no вызывает распознавание без поиска строк
+            res = self.reader(np.array(img.convert("RGB"))[:, :, ::-1],  # RapidOCR ждет BGR, как OpenCV
+                              use_det=True, use_cls=True, use_rec=True)
         if res is None or res.boxes is None or res.txts is None:
             return []
         return [(box.tolist(), txt, float(score)) for box, txt, score in zip(res.boxes, res.txts, res.scores)]
@@ -246,21 +249,62 @@ class OcrEngine:
     def read_front(self, path) -> Tuple[CardData, List[str]]:
         """Лицевая сторона ID: (поля карты, сырые строки)."""
         card = crop_card(load_image(path))
-        best: Optional[Tuple[CardData, List[str]]] = None
         variants = [resize_max(card)]
         if max(card.size) < 1600:  # маленькое фото — вторая попытка в увеличенном виде
             variants.append(resize_max(card, upscale=True))
+        # 180° не пробуем: RapidOCR сам переворачивает строки вверх ногами, но тогда строки
+        # идут в обратном порядке и ФИО собирается неправильно.
+        tried = []  # (поворот, данные, строки, изображение, фрагменты OCR)
         for img in variants:
-            for angle in (0, 90, 270, 180):
+            for angle in (0, 90, 270):
                 rotated = img.rotate(angle, expand=True) if angle else img
-                lines = self.lines(rotated)
+                raw = self.readtext(rotated)
+                lines = group_lines(raw)
                 data = parse_card(lines)
-                key = (bool(data.reg_no), data.filled_count())  # номер ARC важнее остальных полей
-                if best is None or key > (bool(best[0].reg_no), best[0].filled_count()):
-                    best = (data, lines)
-                if data.reg_no and data.filled_count() >= 4:
-                    return best
-        return best
+                tried.append((angle, data, lines, rotated, raw))
+                if data.reg_no and data.name and data.country and reg_no_checksum_ok(data.reg_no):
+                    return data, lines
+        def rank(t):
+            d = t[1]
+            return bool(d.reg_no), reg_no_checksum_ok(d.reg_no), d.filled_count()
+
+        angle, best, lines, best_img, best_raw = max(tried, key=rank)
+        # Чего не хватило (обычно номер) — берем из другого прохода с тем же поворотом.
+        for a2, other, *_rest in sorted(tried, key=rank, reverse=True):
+            if a2 != angle or other is best:
+                continue
+            for key in ("reg_no", "name", "country", "issue_date"):
+                if not getattr(best, key) and getattr(other, key):
+                    setattr(best, key, getattr(other, key))
+        if not reg_no_checksum_ok(best.reg_no):
+            fixed = self.reread_reg_no(best_img, best_raw)
+            if fixed:
+                best.reg_no = fixed
+        for key, word in (("reg_no", "номер"), ("name", "ФИО"), ("country", "страна")):
+            if getattr(best, key):
+                best.warnings = [w for w in best.warnings if not w.startswith(word)]
+        return best, lines
+
+    def reread_reg_no(self, img: Image.Image, raw) -> str:
+        """Номер ARC прочитан с ошибкой («9308205760:8»): вырезаем строку с цифрами с запасом
+        и распознаем ее отдельно, без поиска строк. Берем только номер с верной контрольной цифрой."""
+        from .front import find_reg_no
+
+        for box, text, _conf in raw:
+            if len(re.sub(r"\D", "", text)) < 8:
+                continue
+            xs, ys = [p[0] for p in box], [p[1] for p in box]
+            h = max(ys) - min(ys)
+            for pad in (0.3, 0.15, 0.5):
+                crop = img.crop((max(0, min(xs) - h * pad), max(0, min(ys) - h * pad),
+                                 min(img.width, max(xs) + h * pad), min(img.height, max(ys) + h * pad)))
+                with self._run_lock:
+                    res = self.reader(np.array(crop.convert("RGB"))[:, :, ::-1],
+                                      use_det=False, use_cls=False, use_rec=True)
+                reg = find_reg_no(list(res.txts or [])) if res is not None else ""
+                if reg and reg_no_checksum_ok(reg, foreign_only=True):
+                    return reg
+        return ""
 
     def read_image_lines(self, path) -> List[str]:
         return self.lines_best_rotation(load_image(path))

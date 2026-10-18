@@ -204,3 +204,15 @@ def test_respace_name_with_archive_name():
     assert respace_with_hint("KARIMOVASILBEK BAHTIYOR UGLI", "KARIMOV_ASILBEK (2)") == "KARIMOV ASILBEK BAHTIYOR UGLI"
     assert respace_with_hint("KARIMOV ASILBEK BAHTIYOR UGLI", "KARIMOV ASILBEK") == "KARIMOV ASILBEK BAHTIYOR UGLI"
     assert respace_with_hint("NGUYEN VAN AN", "archive1") == "NGUYEN VAN AN"
+
+
+def test_reg_no_check_digit_and_repair():
+    from e9pass.ocr.front import find_reg_no, reg_no_checksum_ok
+    # номер иностранца: контрольная цифра (13 - S % 11) % 10; вымышленный номер с верной цифрой
+    assert reg_no_checksum_ok("900101-5123452")
+    assert not reg_no_checksum_ok("900101-5123457")
+    assert reg_no_checksum_ok("950101-5123456")          # корейская формула тоже принимается
+    assert find_reg_no(["9001015123:52"]) == "900101-5123452"   # «:» вместо цифры
+    assert find_reg_no(["900101-512345:"]) == "900101-5123452"  # испорчена сама контрольная
+    d = parse_card(["성명 Name", "KARIMOV JASUR", "900101-5123457", "UZBEKISTAN"])
+    assert any("контрольная" in w for w in d.warnings)

@@ -122,6 +122,34 @@ def _fmt_date(y: int, m: int, d: int) -> Optional[str]:
 
 # ---------------------------------------------------------------- номер
 
+_CHECK_WEIGHTS = (2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5)
+
+
+def reg_no_checksum_ok(reg_no: str, foreign_only: bool = False) -> bool:
+    """Контрольная (последняя) цифра номера. У номера иностранца (외국인등록번호) —
+    (13 − Σ % 11) % 10, у корейского — (11 − Σ % 11) % 10. Подходит любая из двух."""
+    d = re.sub(r"\D", "", reg_no or "")
+    if len(d) != 13:
+        return False
+    s = sum(int(a) * w for a, w in zip(d[:12], _CHECK_WEIGHTS))
+    allowed = ((13 - s % 11) % 10,) if foreign_only else ((13 - s % 11) % 10, (11 - s % 11) % 10)
+    return int(d[12]) in allowed
+
+
+def _repair_one_digit(head: str, tail: str) -> str:
+    """Одна цифра прочитана как мусор («5760:18»): подбираем ее по контрольной цифре.
+    Возвращает номер, только если подходит ровно один вариант."""
+    bad = [i for i, ch in enumerate(tail) if not ch.isdigit()]
+    if len(bad) != 1 or tail[0] not in "5678" and bad[0] != 0:
+        return ""
+    found = []
+    for digit in "0123456789":
+        cand = tail[:bad[0]] + digit + tail[bad[0] + 1:]
+        if cand[0] in "5678" and reg_no_checksum_ok(head + cand, foreign_only=True):
+            found.append(f"{head}-{cand}")
+    return found[0] if len(found) == 1 else ""
+
+
 def find_reg_no(lines: List[str]) -> str:
     text = "\n".join(lines)
     m = re.search(r"(?<!\d)(\d{6})\s*" + _DASH + r"?\s*([5-8]\d{6})(?!\d)", text)
@@ -133,6 +161,12 @@ def find_reg_no(lines: List[str]) -> str:
             digits = re.sub(r"\D", "", tok.translate(_DIGIT_FIXES))
             if len(digits) == 13 and digits[6] in "5678":
                 return f"{digits[:6]}-{digits[6:]}"
+    # Третья попытка: одна цифра второй половины прочитана как знак — восстанавливаем по контрольной.
+    for line in lines:
+        for head, tail in re.findall(r"(?<!\d)(\d{6})\s*" + _DASH + r"?\s*([\d:;,'`*#.]{7})(?![\d])", line):
+            fixed = _repair_one_digit(head, tail)
+            if fixed:
+                return fixed
     return ""
 
 
@@ -475,6 +509,8 @@ def parse_card(lines: List[str]) -> CardData:
         data.warnings.append("номер не найден")
     elif not data.birth_date:
         data.warnings.append("номер: неверная дата рождения")
+    elif not reg_no_checksum_ok(data.reg_no):
+        data.warnings.append("номер: контрольная цифра не сходится — сверьте с картой")
     if sex_printed and sex_from_no and sex_printed != sex_from_no:
         data.warnings.append("пол на карте не совпадает с номером")
     for key, label in (("name", "ФИО"), ("country", "страна"),
