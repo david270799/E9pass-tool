@@ -142,3 +142,46 @@ def test_registry_reimport_updates_changed_address(env, tmp_path):
     assert c.phone == "010-5555-6666" and res.addresses_changed == 1
     # повторный импорт того же файла ничего не меняет
     assert services.import_registry_contacts(db, tmp / "r2.xlsx", period="2026-08").addresses_changed == 0
+
+
+class FakeOcr:
+    """OCR-заглушка: «лицо ID» для файлов с front в имени."""
+    def read_image_lines(self, path):
+        if "front" in str(path):
+            return ["외국인등록증 RESIDENCE CARD", "900101-5123452", "성명 Name", "KARIMOV JASUR",
+                    "국가/지역 UZBEKISTAN", "발급일자 2023.05.12", "CHIEF, SUWON OFFICE"]
+        return []
+
+    def read_front(self, path):
+        from e9pass.ocr.front import parse_card
+        lines = self.read_image_lines(path)
+        return parse_card(lines), lines
+
+    def lines(self, img):
+        return []
+
+    def lines_best_rotation(self, img, upscale=False):
+        return []
+
+
+def test_manual_client_filled_from_dropped_photos(tmp_path, monkeypatch):
+    monkeypatch.setenv("E9PASS_HOME", str(tmp_path / "home"))
+    from PIL import Image
+    db = Database(tmp_path / "db.sqlite3")
+    cid = services.create_manual_client(db, "2026-10")
+    c = db.client(cid)
+    assert c.folder.exists() and not c.full_name and "нет фото лицевой стороны ID" in c.warnings
+    photo = tmp_path / "front_photo.jpg"
+    Image.new("RGB", (800, 500), "white").save(photo)
+    monkeypatch.setattr(services, "make_id_a4", lambda db_, cid_, path, *a, **k: None)
+    services.add_documents(db, cid, [photo], engine=FakeOcr())
+    c = db.client(cid)
+    assert c.full_name == "KARIMOV JASUR" and c.arc_number == "900101-5123452"
+    assert db.documents(cid)[0].doc_type == "id_front"
+    assert "нет фото лицевой стороны ID" not in c.warnings
+    # ручная правка не затирается следующим фото
+    services.set_client_fields(db, cid, full_name="KARIMOV JASUR BAKHTIYOR UGLI")
+    photo2 = tmp_path / "front_photo2.jpg"
+    Image.new("RGB", (800, 500), "white").save(photo2)
+    services.add_documents(db, cid, [photo2], engine=FakeOcr())
+    assert db.client(cid).full_name == "KARIMOV JASUR BAKHTIYOR UGLI"

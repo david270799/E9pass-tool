@@ -124,6 +124,9 @@ class DashboardPage(QWidget):
         self.search.textChanged.connect(self.refresh)
         export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
         export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка)")
+        new_b = button("＋ Новый клиент", on_click=self.new_client)
+        new_b.setToolTip("Карточка без архива: потом перетащите в нее фото лица и оборота ID и 통장 — "
+                         "программа распознает их как при приемке архива")
         import_b = button("Импорт реестра", on_click=self.import_registry)
         import_b.setToolTip("Загрузить Excel реестра обратно: телефоны, e-mail и исправленные адреса — "
                             "программа сама найдет клиентов по ARC или ФИО")
@@ -197,7 +200,7 @@ class DashboardPage(QWidget):
         footer = hbox(label("Реестр: №, ФИО (заглавными и строчными), Номер ARC, Дата рождения, "
                             "Гражданство, Адрес регистрации — без банковских данных", dim=True), None, zip_all)
 
-        root = vbox(hbox(switcher, self.month_label, None, self.search, import_b, export_b, spacing=14),
+        root = vbox(hbox(switcher, self.month_label, None, self.search, new_b, import_b, export_b, spacing=14),
                     tiles, self.import_bar, filters, self.empty, scroll, footer,
                     spacing=16, margins=(32, 24, 32, 20))
         self.setLayout(root)
@@ -301,6 +304,11 @@ class DashboardPage(QWidget):
             QMessageBox.warning(self, "Ошибка", "Файл открыт в Excel. Закройте его и повторите.")
             return
         QMessageBox.information(self, "Готово", f"Реестр сохранен:\n{path}")
+
+    def new_client(self):
+        cid = services.create_manual_client(self.state.db, self.state.period)
+        self.state.data_changed.emit()
+        self.state.open_client.emit(cid)
 
     def import_registry(self):
         path, _ = QFileDialog.getOpenFileName(self, "Excel с телефонами и e-mail", "", "Excel (*.xlsx *.xlsm)")

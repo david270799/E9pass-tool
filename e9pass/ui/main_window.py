@@ -207,16 +207,72 @@ class MainWindow(QMainWindow):
         self.show_page("client")
 
 
+INSTANCE_KEY = "E9pay-single-instance"
+
+
+def single_instance(app):
+    """Одна копия программы. Если E9pay уже запущена — просим ее показать окно и возвращаем None.
+    Иначе возвращаем сервер, который будет принимать такие просьбы от следующих запусков."""
+    import getpass
+
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+
+    key = f"{INSTANCE_KEY}-{getpass.getuser()}"
+    sock = QLocalSocket()
+    sock.connectToServer(key)
+    if sock.waitForConnected(500):
+        sock.write(b"show")
+        sock.flush()
+        sock.waitForBytesWritten(500)
+        sock.disconnectFromServer()
+        return None
+    QLocalServer.removeServer(key)  # остаток после аварийного завершения
+    server = QLocalServer(app)
+    server.listen(key)
+    return server
+
+
+def bring_to_front(win):
+    """Показать окно поверх остальных (в том числе свернутое)."""
+    if win.isMinimized():
+        win.showNormal()
+    win.show()
+    win.raise_()
+    win.activateWindow()
+    QApplication.alert(win)  # если Windows не дает вывести окно вперед — мигает значок на панели задач
+
+
 def main():
     import logging
     logging.basicConfig(filename=str(config.data_dir() / "e9pay.log"), level=logging.INFO, encoding="utf-8",
                         format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("e9pay").info("запуск E9pay")
+    if sys.platform == "win32":
+        try:  # свой значок на панели задач: клик сворачивает / разворачивает именно это окно
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("E9pay.App")
+        except Exception:  # noqa: BLE001
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName("E9pay")
+    server = single_instance(app)
+    if server is None:
+        logging.getLogger("e9pay").info("E9pay уже открыта — показываю ее окно")
+        return 0
     app.setStyleSheet(theme.QSS)
     db = Database()
     win = MainWindow(db)
+    win.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
+                       | Qt.WindowMinMaxButtonsHint | Qt.WindowCloseButtonHint)
+
+    def on_second_launch():
+        conn = server.nextPendingConnection()
+        if conn is not None:
+            conn.readAll()
+            conn.disconnectFromServer()
+        bring_to_front(win)
+
+    server.newConnection.connect(on_second_launch)
     win.show()
     # связь с расширением Chrome (только 127.0.0.1, только наше расширение)
     from .. import browser_bridge

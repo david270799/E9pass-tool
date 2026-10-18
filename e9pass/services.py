@@ -484,10 +484,74 @@ def add_documents(db: Database, client_id: int, paths: Iterable[Path], engine: O
         doc = next(d for d in db.documents(client_id) if d.id == doc_id)
         progress(f"{i}/{len(paths)} · проверяю пароль {dst.name}")
         _try_unlock_doc(db, client, doc, progress)
-        _classify_doc(db, doc, rules, engine, lambda m, i=i: progress(f"{i}/{len(paths)} · {m}"))
+        if not _classify_id_photo(db, doc, rules, engine, lambda m, i=i: progress(f"{i}/{len(paths)} · {m}")):
+            _classify_doc(db, doc, rules, engine, lambda m, i=i: progress(f"{i}/{len(paths)} · {m}"))
         ids.append(doc_id)
+    added_types = {d.doc_type for d in db.documents(client_id) if d.id in ids}
+    if added_types & {BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK}:
+        fill_empty_from_photos(db, client_id, engine, progress)
     _refresh_status(db, client_id)
     return ids
+
+
+def _classify_id_photo(db: Database, doc, rules, engine, progress: Progress = _noop) -> bool:
+    """Фото, брошенное в карточку: лицо / оборот ID или 통장 — как при приемке архива.
+    Маски имени файла (скриншоты и т.п.) важнее: такие фото этой проверкой не трогаем."""
+    if doc.path.suffix.lower() not in IMAGE_EXTENSIONS:
+        return False
+    client = db.client(doc.client_id)
+    code, _reason = classify_file(doc.path, rules, None, doc.original_name, client.full_name if client else "")
+    if code:
+        return False
+    progress(f"Определяю фото: {doc.path.name}")
+    kind, reason = detect.classify_photo(engine.read_image_lines(doc.path))
+    if kind not in (detect.FRONT, detect.BACK, detect.BANK):
+        return False
+    db.update_document(doc.id, doc_type=kind, detected_by=reason)
+    doc.doc_type = kind
+    return True
+
+
+def fill_empty_from_photos(db: Database, client_id: int, engine: Optional[OcrEngine] = None,
+                           progress: Progress = _noop):
+    """Распознает фото ID/통장 клиента и заполняет только пустые поля (ручные правки не трогает).
+    Лист А4 создается, если его еще нет."""
+    engine = engine or OcrEngine.get()
+    client = db.client(client_id)
+    docs = [d for d in db.documents(client_id) if not d.is_processed_scan]
+    photos = [PhotoResult(d.path, d.doc_type, d.detected_by) for d in docs
+              if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK)]
+    hint = Path(client.source_archive).stem if client.source_archive else ""
+    fields, _warnings = _extract_fields(engine, photos, progress, hint)
+    empty = {k: v for k, v in fields.items() if v and not getattr(client, k, "")}
+    if empty:
+        db.update_client(client_id, **empty)
+    fronts = [p for p in photos if p.doc_type == BUILTIN_FRONT]
+    if fronts and not db.documents_of_type(client_id, BUILTIN_A4):
+        progress("Готовлю ID на А4")
+        make_id_a4(db, client_id, fronts[0].path)
+    # предупреждения: «нет фото …» — по текущим фото, о пустых полях — снять, если поле заполнено
+    client = db.client(client_id)
+    resolved = {"full_name": "ФИО", "arc_number": "номер", "nationality": "страна",
+                "registered_address": "адрес", "bank_name": "банк"}
+    warnings = [w for w in client.warnings if not w.startswith("нет фото")]
+    warnings += [w for w in _warnings if w.startswith("нет фото") or w.startswith("адрес: запись")]
+    for key, prefix in resolved.items():
+        if getattr(client, key):
+            warnings = [w for w in warnings if not w.startswith(prefix) or w.startswith("адрес: запись")]
+    db.update_client(client_id, warnings=list(dict.fromkeys(warnings)))
+    return empty
+
+
+def create_manual_client(db: Database, period: str) -> int:
+    """Пустая карточка без архива: фото ID и 통장 добавляются потом перетаскиванием в карточку."""
+    from datetime import datetime
+
+    folder = _unique(config.period_dir(period) / f"Новый_клиент_{datetime.now():%Y%m%d_%H%M%S}")
+    (folder / ORIGINALS).mkdir(parents=True)
+    client_id = db.add_client(period, folder_path=str(folder), source_archive="")
+    _refresh_status(db, client_id, ["нет фото лицевой стороны ID", "нет фото оборота ID", "нет фото 통장사본"])
+    return client_id
 
 
 def recheck_documents(db: Database, client_id: int, engine: Optional[OcrEngine] = None,
