@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .. import config
-from .front import CardData, parse_card, reg_no_checksum_ok
+from .front import CardData, front_orientation_ok, parse_card, reg_no_checksum_ok
 
 try:  # фото с iPhone (.heic)
     from pillow_heif import register_heif_opener
@@ -143,6 +143,20 @@ def crop_card(img: Image.Image) -> Image.Image:
     return warp_perspective(img, pts) if pts is not None else img
 
 
+def _text_crop(img: Image.Image, raw) -> Optional[Image.Image]:
+    """Область с текстом (карта) с небольшим запасом; None, если текста почти нет."""
+    if len(raw) < 4:
+        return None
+    xs = [p[0] for box, _t, _c in raw for p in box]
+    ys = [p[1] for box, _t, _c in raw for p in box]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    m = 0.04 * max(x1 - x0, y1 - y0)
+    box = (max(0, x0 - m), max(0, y0 - m), min(img.width, x1 + m), min(img.height, y1 + m))
+    if (box[2] - box[0]) * (box[3] - box[1]) > 0.8 * img.width * img.height:
+        return None  # карта и так занимает все фото
+    return img.crop(box)
+
+
 def group_lines(results) -> List[str]:
     """Собирает фрагменты OCR в строки.
 
@@ -246,9 +260,24 @@ class OcrEngine:
                     best = res
         return group_lines(best)
 
+    def _front_pass(self, img: Image.Image, angle: int):
+        rotated = img.rotate(angle, expand=True) if angle else img
+        raw = self.readtext(rotated)
+        lines = group_lines(raw)
+        return angle, parse_card(lines), lines, rotated, raw
+
+    @staticmethod
+    def _front_rank(t):
+        _angle, d, lines, *_rest = t
+        # положение важнее номера: перевернутый проход дает строки в обратном порядке
+        return (front_orientation_ok(lines), bool(d.reg_no), reg_no_checksum_ok(d.reg_no),
+                d.filled_count())
+
     def read_front(self, path) -> Tuple[CardData, List[str]]:
         """Лицевая сторона ID: (поля карты, сырые строки)."""
-        card = crop_card(load_image(path))
+        photo = load_image(path)
+        corners = find_card_corners(photo)
+        card = photo if corners is None else crop_card(photo)
         variants = [resize_max(card)]
         if max(card.size) < 1600:  # маленькое фото — вторая попытка в увеличенном виде
             variants.append(resize_max(card, upscale=True))
@@ -257,29 +286,43 @@ class OcrEngine:
         tried = []  # (поворот, данные, строки, изображение, фрагменты OCR)
         for img in variants:
             for angle in (0, 90, 270):
-                rotated = img.rotate(angle, expand=True) if angle else img
-                raw = self.readtext(rotated)
-                lines = group_lines(raw)
-                data = parse_card(lines)
-                tried.append((angle, data, lines, rotated, raw))
-                if data.reg_no and data.name and data.country and reg_no_checksum_ok(data.reg_no):
-                    return data, lines
-        def rank(t):
-            d = t[1]
-            return bool(d.reg_no), reg_no_checksum_ok(d.reg_no), d.filled_count()
-
-        angle, best, lines, best_img, best_raw = max(tried, key=rank)
-        # Чего не хватило (обычно номер) — берем из другого прохода с тем же поворотом.
-        for a2, other, *_rest in sorted(tried, key=rank, reverse=True):
+                t = self._front_pass(img, angle)
+                tried.append(t)
+                d = t[1]
+                if (front_orientation_ok(t[2]) and d.reg_no and d.name and d.country
+                        and reg_no_checksum_ok(d.reg_no)):
+                    return d, t[2]
+            if corners is None:
+                # Края карты не нашлись (пестрый фон): вырезаем карту по области с текстом
+                # в лучшем положении и читаем ее крупнее.
+                best = max(tried, key=self._front_rank)
+                crop = _text_crop(best[3], best[4])
+                if crop is not None:
+                    t = self._front_pass(resize_max(crop, upscale=True), 0)
+                    t = (best[0], *t[1:])  # тот же поворот — для объединения полей ниже
+                    tried.append(t)
+                    if front_orientation_ok(t[2]) and t[1].reg_no and t[1].name and reg_no_checksum_ok(t[1].reg_no):
+                        return t[1], t[2]
+        angle, best, lines, best_img, best_raw = max(tried, key=self._front_rank)
+        # Чего не хватило — берем из другого прохода с тем же поворотом.
+        for a2, other, *_rest in sorted(tried, key=self._front_rank, reverse=True):
             if a2 != angle or other is best:
                 continue
-            for key in ("reg_no", "name", "country", "issue_date"):
+            for key in ("name", "country", "issue_date"):
                 if not getattr(best, key) and getattr(other, key):
                     setattr(best, key, getattr(other, key))
+        # Номеру порядок строк не важен — подходит верный номер из любого прохода.
+        if not reg_no_checksum_ok(best.reg_no):
+            valid = [t[1].reg_no for t in tried if reg_no_checksum_ok(t[1].reg_no, foreign_only=True)]
+            if valid:
+                best.reg_no = max(set(valid), key=valid.count)
         if not reg_no_checksum_ok(best.reg_no):
             fixed = self.reread_reg_no(best_img, best_raw)
             if fixed:
                 best.reg_no = fixed
+        if not best.reg_no:
+            best.reg_no = next((t[1].reg_no for t in sorted(tried, key=self._front_rank, reverse=True)
+                                if t[1].reg_no), "")
         for key, word in (("reg_no", "номер"), ("name", "ФИО"), ("country", "страна")):
             if getattr(best, key):
                 best.warnings = [w for w in best.warnings if not w.startswith(word)]

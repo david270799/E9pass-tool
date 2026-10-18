@@ -48,3 +48,12 @@ def test_old_database_gets_new_rules(tmp_path):
     assert "{ФИО}" in codes["contract"].filename_patterns
     Database(path)  # повторное открытие ничего не дублирует
     assert len(db.rules()) == len(codes)
+
+
+def test_wage_statement_order_descending_with_parts():
+    from types import SimpleNamespace
+    from pathlib import Path
+    docs = [SimpleNamespace(original_name=f"{n}.pdf", path=Path(f"/x/{n}.pdf"))
+            for n in ["21", "23-1", "26", "23", "25", "21-1", "22"]]
+    order = [Path(d.original_name).stem for d in services._descending_with_parts(docs)]
+    assert order == ["26", "25", "23", "23-1", "22", "21", "21-1"]

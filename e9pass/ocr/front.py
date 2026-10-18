@@ -395,6 +395,12 @@ def normalize_name(name: str) -> str:
     # Дефис переноса OCR иногда теряет: «JOHONGIR B AKHRITDIN». Одиночная буква внутри имени
     # не бывает отдельным словом — приклеиваем ее к следующему: «BAKHRITDIN».
     name = re.sub(r"(?<=[A-Z] )([A-Z])\s+(?=[A-Z]{2})", r"\1", name)
+    # Потерянный пробел после фамилии: «KAKHRAMONOVIBRA» -> «KAKHRAMONOV IBRA». После «-OV/-EV» на «A»
+    # не делим: это может быть женская фамилия (TURSUNOVA).
+    name = re.sub(r"\b([A-Z]{4,}(?:OV|EV))(?=[B-DF-HJ-NP-TV-Z]?[A-Z]{3,}\b)(?!A|ICH|NA|NA\b)(?=[A-Z])",
+                  lambda m: m.group(1) + " ", name)
+    name = re.sub(r"\bUGL\b", "UGLI", name)
+    name = re.sub(r"\bOGL\b", "OGLI", name)
     return re.sub(r"\s+", " ", name)
 
 
@@ -437,8 +443,24 @@ def _with_continuation(first: str, rest_lines: List[str], country: str) -> str:
         cont = _name_line(nxt, country)
         if not cont:
             break
-        name = f"{name.rstrip('-').rstrip()}{cont}" if name.endswith("-") else f"{name} {cont}"
+        if name.endswith("-") or _cannot_start_word(cont):
+            # «IBRA-» + «TBEK» — перенос; дефис OCR мог потерять, но слово не начинается с «TB»
+            name = f"{name.rstrip('-').rstrip()}{cont}"
+        else:
+            name = f"{name} {cont}"
     return normalize_name(name)
+
+
+_VOWELS = set("AEIOUY")
+_WORD_STARTS = {"SH", "CH", "KH", "ZH", "TS", "GH", "PH", "TH", "ST", "SK", "SP", "SV", "SN", "SM", "SL",
+                "BR", "KR", "PR", "TR", "DR", "GR", "FR", "VR", "BL", "KL", "PL", "FL", "GL", "YU", "YA", "YO"}
+
+
+def _cannot_start_word(text: str) -> bool:
+    """Две согласные, с которых имя не начинается («TBEK», «RBEK») — это вторая половина переноса."""
+    w = text.split()[0] if text.split() else ""
+    return (len(w) >= 3 and w[0] not in _VOWELS and w[1] not in _VOWELS
+            and w[:2] not in _WORD_STARTS)
 
 
 def find_name(lines: List[str], country: str = "") -> str:
@@ -489,6 +511,17 @@ def find_sex(lines: List[str]) -> str:
 
 
 # ---------------------------------------------------------------- всё вместе
+
+_TOP = re.compile(r"외국인등록증|RESIDENCE|등록번호|Registration", re.I)
+_BOTTOM = re.compile(r"Issue|발급|CHIEF|출입국|외국인청|사무소|OFFICE", re.I)
+
+
+def front_orientation_ok(lines: List[str]) -> int:
+    """1 — строки идут сверху вниз: заголовок карты выше подписи «발급일자 / CHIEF … OFFICE»."""
+    top = next((i for i, line in enumerate(lines) if _TOP.search(line)), None)
+    bottom = next((i for i in range(len(lines) - 1, -1, -1) if _BOTTOM.search(lines[i])), None)
+    return int(top is not None and bottom is not None and top < bottom)
+
 
 def parse_card(lines: List[str]) -> CardData:
     lines = [_clean(l) for l in lines if l and l.strip()]

@@ -571,6 +571,18 @@ def _natural_key(name: str):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
+# Типы, где в Master-PDF номера идут с последнего: 26, 25, 24, 23, 23-1, 22, 21.
+DESCENDING_TYPES = {"wage_statement"}
+
+
+def _descending_with_parts(docs):
+    """Номера по убыванию, а части номера (23-1, 23-2) — сразу после него по возрастанию."""
+    def key(d):
+        nums = [int(n) for n in re.findall(r"\d+", Path(d.original_name or d.path.name).stem)] or [0]
+        return (-nums[0], nums[1:])
+    return sorted(docs, key=key)
+
+
 def master_queue(db: Database, client_id: int):
     """[(правило, [документы])] по очереди правил Master-PDF."""
     docs = db.documents(client_id)
@@ -580,6 +592,8 @@ def master_queue(db: Database, client_id: int):
             continue
         items = sorted((d for d in docs if d.doc_type == r.code and d.password_status != "locked"),
                        key=lambda d: _natural_key(Path(d.original_name or d.path.name).stem))
+        if r.code in DESCENDING_TYPES:
+            items = _descending_with_parts(items)
         out.append((r, items))
     return out
 

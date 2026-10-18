@@ -216,3 +216,19 @@ def test_reg_no_check_digit_and_repair():
     assert find_reg_no(["900101-512345:"]) == "900101-5123452"  # испорчена сама контрольная
     d = parse_card(["성명 Name", "KARIMOV JASUR", "900101-5123457", "UZBEKISTAN"])
     assert any("контрольная" in w for w in d.warnings)
+
+
+def test_lost_wrap_hyphen_and_surname_space():
+    lines = ["KOR 외국인등록증", "RESIDENCECARD", "9611095710035", "성명 KARIMOVIBRA", "Name TBEK IBROKHIMJON",
+             "UGL", "국가 지역 UZBEKISTAN", "발급일자 Issue Date 2023.11.10", "CHIEF, GIMHAE BRANCH OFFICE"]
+    assert parse_card(lines).name == "KARIMOV IBRATBEK IBROKHIMJON UGLI"
+    from e9pass.ocr.front import normalize_name
+    assert normalize_name("TURSUNOVADILNOZA") == "TURSUNOVADILNOZA"   # -OVA не делим
+    assert normalize_name("ABDURAKHMONOVICH") == "ABDURAKHMONOVICH"
+
+
+def test_front_orientation_by_line_order():
+    from e9pass.ocr.front import front_orientation_ok
+    good = ["KOR 외국인등록증", "961109-5710035", "성명 KARIMOV", "UZBEKISTAN", "CHIEF, GIMHAE BRANCH OFFICE"]
+    assert front_orientation_ok(good) == 1
+    assert front_orientation_ok(list(reversed(good))) == 0
