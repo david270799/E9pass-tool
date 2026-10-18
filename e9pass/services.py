@@ -197,10 +197,23 @@ def _read_front(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None
 
 def _read_back(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None):
     from .ocr.ocr_engine import crop_card, load_image
+    from .ocr.ocr_engine import resize_max
     card = crop_card(load_image(path))
-    addr, w = back_ocr.parse_back(engine.lines_best_rotation(card))
-    if not addr and max(card.size) < 1600:  # маленькое фото — вторая попытка в увеличенном виде
-        addr, w = back_ocr.parse_back(engine.lines_best_rotation(card, upscale=True))
+    # Карта на фото бывает повернута как угодно: пробуем все положения и берем то, где адрес
+    # найден и даты таблицы идут по порядку (перевернутый снимок OCR читает снизу вверх).
+    variants = [resize_max(card)]
+    if max(card.size) < 1600:
+        variants.append(resize_max(card, upscale=True))
+    best_lines, best_key = [], None
+    for img in variants:
+        for angle in (0, 90, 270, 180):
+            cand = engine.lines(img.rotate(angle, expand=True) if angle else img)
+            key = back_ocr.orientation_score(cand)
+            if best_key is None or key > best_key:
+                best_lines, best_key = cand, key
+        if best_key and best_key[0] and best_key[1]:
+            break
+    addr, w = back_ocr.parse_back(best_lines)
     if not addr and lines:
         addr, w = back_ocr.parse_back(lines)
     return addr, w

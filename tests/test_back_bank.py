@@ -82,3 +82,21 @@ def test_group_lines_on_tilted_photo():
            (box(10, 145, 200, 30, a), "2025.07.18", 1), (box(260, 160 + 250 * math.sin(a), 400, 30, a), "16-8", 1),
            (box(900, 50, 30, 400, 0), "KARIMOV ASILBEK", 1)]
     assert group_lines(res) == ["2024.05.23 경상북도", "2025.07.18 16-8"]
+
+
+def test_address_above_its_centered_date_and_handwritten_newer_row():
+    from e9pass.ocr.back import parse_back
+    lines = ["일련번호1-022-013-6006", "·체류기간(Duration of Stay)", "2022.05.16 2025.05.16 전주",
+             "2025 05.07 202703.16 전주", "·체류지(Address)", "신고일 체류지",
+             "전라북도 완주군 봉동읍 원둔산1길", "2022.05.25 21,진솔빌 304호", "2023.5.23", "Et1314210n/202"]
+    addr, warnings = parse_back(lines)
+    assert addr == "전라북도 완주군 봉동읍 원둔산1길 21, 진솔빌 304호"
+    assert warnings and "2023.5.23" in warnings[0]
+
+
+def test_orientation_prefers_ascending_address_dates():
+    from e9pass.ocr.back import orientation_score
+    good = ["체류지(Address)", "2022.08.03 경상남도 김해시 진례면 코모로341번길 47",
+            "2024.05.23 경상북도 영천시 금호읍 원제2길 16-8"]
+    reversed_ = list(reversed(good))
+    assert orientation_score(good) > orientation_score(reversed_)

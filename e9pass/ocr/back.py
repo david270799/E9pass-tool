@@ -86,24 +86,63 @@ def _is_continuation(line: str) -> bool:
                                or re.search(r"\d+\s*(?:동|호|층|번지)", part))
 
 
-def parse_addresses(lines: List[str]) -> List[str]:
-    """Все адреса с оборота сверху вниз."""
-    rows: List[List[str]] = []
+def _has_region(line: str) -> bool:
+    return any(r in line for r in _REGION)
+
+
+_ADDRESS_HEAD = re.compile(r"Address|체류지\s*[(（]")
+
+
+def _rows(lines: List[str]) -> List[Tuple[str, str]]:
+    """Ряды таблицы 체류지 сверху вниз: (дата, адрес или '' если адрес не прочитан).
+
+    Даты выше заголовка «체류지(Address)» — таблица сроков пребывания, а не адреса."""
+    head = next((i for i, line in enumerate(lines) if _ADDRESS_HEAD.search(line)), -1)
+    if head >= 0:
+        rows = _rows_from(lines[head + 1:])
+        if any(a for _d, a in rows):
+            return rows
+    return _rows_from(lines)
+
+
+def _rows_from(lines: List[str]) -> List[Tuple[str, str]]:
     # OCR может склеить штамп прошлой строки с датой следующей: «팔달구청장 2024.02.01 경기도…»
     split_lines = []
     for line in lines:
         split_lines += [p for p in re.split(r"\s+(?=(?:19|20)\d{2}\s*[.\-/\s]\s*\d{1,2}\s*[.\-/\s]\s*\d{1,2})", line)
                         if p.strip()]
+    rows: List[List] = []      # [дата, [части адреса]]
+    pending: List[str] = []    # начало адреса выше своей даты (дата стоит по центру ячейки)
     for line in split_lines:
-        if _DATE.match(line):
-            rows.append([line])
-        elif rows and _is_continuation(line):
-            rows[-1].append(line)  # перенос длинного адреса на следующую строку
-    found = []
-    for row in rows:
-        addr = clean_address(_join_row(row))
-        if is_address(addr):
-            found.append(addr)
+        m = _DATE.match(line)
+        if m:
+            rest = line[m.end():]
+            if re.match(r"\s*(?:19|20)\d{2}", rest) or re.search(r"체류기간|허가|만료", line):
+                continue  # «허가일자 만료일자» — таблица сроков пребывания, не адрес
+            rows.append([m.group(0).strip(), pending + ([rest] if rest.strip() else [])])
+            pending = []
+        elif _has_region(clean_address(line)) and not re.search(r"체류기간|허가|만료", line):
+            if rows and not any(_has_region(clean_address(x)) for x in rows[-1][1]):
+                rows[-1][1].append(line)   # у прошлой даты адреса еще нет — это ее адрес
+            else:
+                pending.append(line)       # новый адрес, его дата будет ниже
+        elif _is_continuation(line):
+            if pending:
+                pending.append(line)
+            elif rows:
+                rows[-1][1].append(line)   # перенос длинного адреса на следующую строку
+    if pending and rows and not any(_has_region(clean_address(x)) for x in rows[-1][1]):
+        rows[-1][1] += pending
+    out = []
+    for date, parts in rows:
+        addr = clean_address(_join_row(parts)) if parts else ""
+        out.append((date, addr if is_address(addr) else ""))
+    return out
+
+
+def parse_addresses(lines: List[str]) -> List[str]:
+    """Все адреса с оборота сверху вниз."""
+    found = [a for _d, a in _rows(lines) if a]
     if not found:  # таблица не распозналась — берем строки, похожие на адрес
         for line in lines:
             addr = clean_address(line)
@@ -112,12 +151,39 @@ def parse_addresses(lines: List[str]) -> List[str]:
     return found
 
 
+def _date_key(date: str) -> str:
+    y, m, d = (re.findall(r"\d+", date) + ["0", "0", "0"])[:3]
+    return f"{y}{int(m):02d}{int(d):02d}"
+
+
 def parse_back(lines: List[str]) -> Tuple[str, List[str]]:
     """(адрес, предупреждения)."""
     addrs = parse_addresses(lines)
     if not addrs:
         return "", ["адрес на обороте не найден"]
-    return addrs[-1], []
+    warnings = []
+    rows = _rows(lines)
+    dated = [(d, a) for d, a in rows if a]
+    if dated:
+        last = _date_key(dated[-1][0])
+        newer = [d for d, a in rows if not a and _date_key(d) > last]
+        if newer:  # запись от руки / наклейка: дата есть, адрес не прочитан
+            warnings.append(f"адрес: запись от {newer[-1]} не распознана (возможно, от руки) — "
+                            "проверьте последний адрес")
+    return addrs[-1], warnings
+
+
+def orientation_score(lines: List[str]) -> Tuple[int, int, int]:
+    """Насколько похоже, что оборот прочитан в правильном положении: адрес найден, даты таблицы
+    идут сверху вниз по возрастанию (у перевернутого снимка строки приходят в обратном порядке)."""
+    addrs = parse_addresses(lines)
+    # даты таблицы адресов — после заголовка «체류지(Address)»; таблица 체류기간 выше не в счет
+    head = next((i for i, line in enumerate(lines) if _ADDRESS_HEAD.search(line)), -1)
+    dates = [m.group(0) for line in lines[head + 1:]
+             for m in re.finditer(r"(?:19|20)\d{2}\s*[.\-/]\s*\d{1,2}\s*[.\-/\s]\s*\d{1,2}", line)]
+    keys = [re.sub(r"\D", "", d) for d in dates]
+    ascending = int(len(keys) >= 2 and keys == sorted(keys))
+    return int(bool(addrs)), ascending, sum(len(a) for a in addrs)
 
 
 def back_score(lines: List[str]) -> Tuple[int, Optional[str]]:
