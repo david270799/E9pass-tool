@@ -130,11 +130,11 @@ class ClientPage(QWidget):
                 if code == BUILTIN_FRONT:
                     t.setToolTip("Редактор скана: углы карты, лист А4, проверка ФИО")
                     t.mousePressEvent = lambda _e, doc=d: self.open_scan_editor(doc)
-                else:  # оборот: только посмотреть крупно, скан для него не нужен
-                    t.setToolTip("Посмотреть оборот крупно")
-                    t.mousePressEvent = lambda _e, doc=d: self.preview(doc.path, "Оборот ID")
+                else:  # оборот: крупный просмотр и правка адреса, скан для него не нужен
+                    t.setToolTip("Оборот крупно и правка адреса")
+                    t.mousePressEvent = lambda _e, doc=d: self.open_back_viewer(doc)
             thumbs.addWidget(t)
-        thumbs.addWidget(label("Лицо — редактор скана\nОборот — просмотр", dim=True))
+        thumbs.addWidget(label("Нажмите на фото —\nпроверка и правка", dim=True))
         thumbs.addStretch(1)
         lay.addLayout(thumbs)
 
@@ -229,6 +229,9 @@ class ClientPage(QWidget):
                 else:
                     actions.append(button("Редактор скана", primary=True, small=True,
                                           on_click=lambda _=False, doc=d: self.open_scan_editor(doc)))
+            elif d.doc_type == BUILTIN_BACK and not d.is_processed_scan:
+                actions.append(button("Посмотреть и адрес", small=True,
+                                      on_click=lambda _=False, doc=d: self.open_back_viewer(doc)))
             else:
                 actions.append(button("Посмотреть", small=True, on_click=lambda _=False, p=d.path: self.preview(p)))
             rm = button("✕", flat=True, on_click=lambda _=False, doc=d: self.delete_doc(doc))
@@ -448,6 +451,14 @@ class ClientPage(QWidget):
     def preview(self, path, title=""):
         from .preview import show_preview
         show_preview(path, title or Path(path).name, self)
+
+    def open_back_viewer(self, doc):
+        from .back_viewer import BackViewer
+        dlg = BackViewer(self.state, self.client_id, doc, self)
+        dlg.exec()
+        if dlg.changed:
+            self.state.data_changed.emit()
+            self.state.busy_changed.emit("Адрес сохранен")
 
     def open_scan_editor(self, doc):
         from .scan_editor import ScanEditor
