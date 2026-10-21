@@ -23,7 +23,7 @@ class TrainDialog(QDialog):
         self.busy = BusyBar()
         self.busy.hide()
         self.status = wrap_label("", dim=True)
-        self.setup_b = button("Установить инструменты (~1,7 ГБ, один раз)", on_click=self.setup)
+        self.setup_b = button("Установить инструменты (~2 ГБ, один раз)", on_click=self.setup)
         self.train_b = button("Начать обучение", primary=True, on_click=self.train)
         self.stop_b = button("Остановить", on_click=self.stop)
         self.stop_b.hide()
@@ -43,7 +43,7 @@ class TrainDialog(QDialog):
         self.info.setText(
             f"Проверено карт: {st[training.DONE]} (лицо {st['front']}, оборот {st['back']}). "
             + ("Инструменты обучения установлены." if ready else
-               "Инструменты обучения еще не установлены — нужен интернет один раз (~1,7 ГБ), дальше все офлайн.")
+               "Инструменты обучения еще не установлены — нужен интернет один раз (~2 ГБ), дальше все офлайн.")
             + " Для заметного эффекта — от 100 карт, для хорошего — 300–400.")
         while self.models_box.count():
             item = self.models_box.takeAt(0)

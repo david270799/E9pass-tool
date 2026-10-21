@@ -1,6 +1,6 @@
 """Дообучение моделей распознавания на размеченных картах (страница «Обучение OCR»).
 
-Все работает на этом компьютере. Инструменты обучения (PaddlePaddle + PaddleOCR, ~1,7 ГБ) один раз
+Все работает на этом компьютере. Инструменты обучения (PaddlePaddle + PaddleOCR, ~2 ГБ) один раз
 скачиваются в папку training/toolkit; дальше интернет не нужен. Порядок:
   1) из проверенных карт вырезаются строки (training.build_dataset);
   2) готовая модель дообучается на них: основа модели заморожена, учатся верхние слои (CTC) —
@@ -198,7 +198,7 @@ def _download(url: str, dst: Path, progress: Progress, title: str):
 # ------------------------------------------------------------ установка инструментов
 
 def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
-    """Один раз: uv + Python 3.12 + PaddlePaddle + PaddleOCR + исходные веса моделей (~1,7 ГБ)."""
+    """Один раз: uv + Python 3.12 + PaddlePaddle + PaddleOCR + исходные веса моделей (~2 ГБ)."""
     tk = toolkit_dir()
     tk.mkdir(parents=True, exist_ok=True)
     log = tk / "setup.log"
@@ -242,7 +242,8 @@ def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
     # 3. Python 3.12 и пакеты
     if not env_python().exists():
         progress("Python 3.12 для обучения")
-        _run([uv, "venv", tk / "env", "--python", "3.12"], log, env=uv_env, cancel=cancel)
+        _run([uv, "venv", tk / "env", "--python", "3.12", "--python-preference", "only-managed"], log,
+             env=uv_env, cancel=cancel)
     progress("PaddlePaddle и зависимости (самое долгое — до 1,5 ГБ)")
     _run([uv, "pip", "install", "--python", env_python(), *PADDLE_PKGS, "-r", paddleocr_dir() / "requirements.txt"],
          log, env=uv_env, on_line=lambda s: progress(f"Установка: {s[:90]}") if s.strip() else None, cancel=cancel)
@@ -255,6 +256,7 @@ def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
     (tk / "add_meta.py").write_text(ADD_META, encoding="utf-8")
     progress("Проверка PaddlePaddle")
     _run([env_python(), "-c", "import paddle; print(paddle.__version__)"], log, cancel=cancel)
+    shutil.rmtree(tk / "uv-cache", ignore_errors=True)  # кэш загрузок больше не нужен
     (tk / ".ready").write_text(datetime.now().isoformat(timespec="seconds"))
     progress("Инструменты обучения установлены")
 
