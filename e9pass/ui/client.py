@@ -127,10 +127,14 @@ class ClientPage(QWidget):
                 if pm:
                     t.setPixmap(pm)
                 t.setCursor(Qt.PointingHandCursor)
-                t.setToolTip("Открыть редактор скана")
-                t.mousePressEvent = lambda _e, doc=d: self.open_scan_editor(doc)
+                if code == BUILTIN_FRONT:
+                    t.setToolTip("Редактор скана: углы карты, лист А4, проверка ФИО")
+                    t.mousePressEvent = lambda _e, doc=d: self.open_scan_editor(doc)
+                else:  # оборот: только посмотреть крупно, скан для него не нужен
+                    t.setToolTip("Посмотреть оборот крупно")
+                    t.mousePressEvent = lambda _e, doc=d: self.preview(doc.path, "Оборот ID")
             thumbs.addWidget(t)
-        thumbs.addWidget(label("Нажмите на фото —\nредактор скана", dim=True))
+        thumbs.addWidget(label("Лицо — редактор скана\nОборот — просмотр", dim=True))
         thumbs.addStretch(1)
         lay.addLayout(thumbs)
 
@@ -213,7 +217,7 @@ class ClientPage(QWidget):
             line1 += [fname]
             scan_status = None
             actions = []
-            if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK) and not d.is_processed_scan:
+            if d.doc_type == BUILTIN_FRONT and not d.is_processed_scan:
                 done = self._scan_result(docs, d.doc_type)
                 if done is not None:
                     manual = done.detected_by == services.SCAN_MANUAL

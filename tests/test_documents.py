@@ -185,3 +185,24 @@ def test_manual_client_filled_from_dropped_photos(tmp_path, monkeypatch):
     Image.new("RGB", (800, 500), "white").save(photo2)
     services.add_documents(db, cid, [photo2], engine=FakeOcr())
     assert db.client(cid).full_name == "KARIMOV JASUR BAKHTIYOR UGLI"
+
+
+def test_client_zip_is_flat_without_contract_and_scans(env, monkeypatch):
+    import zipfile
+    db, cid, tmp = env
+    folder = db.client(cid).folder
+    (folder / "originals").mkdir(exist_ok=True)
+    (folder / "scans").mkdir(exist_ok=True)
+    files = {}
+    for name, kind, scan in [("front.jpg", "id_front", 0), ("TEST.pdf", "contract", 0), ("nhis-1.pdf", "insurance", 0),
+                             ("ID_A4.pdf", "id_a4", 1), ("ID_back.png", "id_back", 1)]:
+        p = folder / ("scans" if scan else "originals") / name
+        p.write_bytes(b"x")
+        db.add_document(cid, kind, p, original_name=name, is_processed_scan=scan)
+        files[name] = p
+    master = folder / "MASTER.pdf"
+    master.write_bytes(b"m")
+    db.update_client(cid, master_pdf=str(master))
+    out = services.export_client_zip(db, cid, tmp)
+    names = sorted(zipfile.ZipFile(out).namelist())
+    assert names == ["MASTER.pdf", "front.jpg", "nhis-1.pdf"]

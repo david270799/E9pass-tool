@@ -2,12 +2,67 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QDialog, QLabel, QScrollArea
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtWidgets import QDialog, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
 from .. import pdf_tools
 from .widgets import button, hbox, label, open_path, pil_to_pixmap, vbox
+
+
+class ZoomView(QGraphicsView):
+    """Картинка во весь размер окна. Колесико — увеличить/уменьшить под курсором,
+    перетаскивание — сдвиг, двойной щелчок — целиком."""
+
+    MAX_ZOOM = 8.0
+
+    def __init__(self):
+        super().__init__()
+        self.setScene(QGraphicsScene(self))
+        self.setRenderHint(QPainter.SmoothPixmapTransform)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setStyleSheet("background:#0E0E0E;border:none;")
+        self.item = None
+        self.zoom = 1.0
+
+    def set_pixmap(self, pm: QPixmap):
+        self.scene().clear()
+        self.item = QGraphicsPixmapItem(pm)
+        self.item.setTransformationMode(Qt.SmoothTransformation)
+        self.scene().addItem(self.item)
+        self.scene().setSceneRect(QRectF(pm.rect()))
+        self.fit()
+
+    def set_text(self, text: str):
+        self.scene().clear()
+        self.item = None
+        self.scene().addText(text).setDefaultTextColor(Qt.white)
+
+    def fit(self):
+        self.zoom = 1.0
+        self.resetTransform()
+        if self.item:
+            self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+
+    def wheelEvent(self, e):
+        if not self.item:
+            return
+        step = 1.25 if e.angleDelta().y() > 0 else 1 / 1.25
+        new = min(self.MAX_ZOOM, max(1.0, self.zoom * step))
+        if new == 1.0:
+            self.fit()
+        elif new != self.zoom:
+            self.scale(new / self.zoom, new / self.zoom)
+            self.zoom = new
+
+    def mouseDoubleClickEvent(self, _e):
+        self.fit()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.zoom == 1.0:
+            self.fit()
 
 
 class PreviewDialog(QDialog):
@@ -17,76 +72,59 @@ class PreviewDialog(QDialog):
         self.setWindowTitle(f"Просмотр — {title or self.path.name}")
         self.resize(900, 1000)
         self.page = 0
-        self.zoom_fit = True
         self.is_pdf = pdf_tools.real_extension(self.path) == ".pdf"
         self.pages = pdf_tools.page_count(self.path) if self.is_pdf else 1
 
-        self.view = QLabel()
-        self.view.setAlignment(Qt.AlignCenter)
-        self.view.setStyleSheet("background:#0E0E0E;")
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setWidget(self.view)
+        self.view = ZoomView()
         self.info = label("", muted=True)
         self.prev_b = button("‹ Назад", small=True, on_click=lambda: self.go(-1))
         self.next_b = button("Вперед ›", small=True, on_click=lambda: self.go(1))
-        self.zoom_b = button("100%", small=True, on_click=self.toggle_zoom)
+        self.zoom_b = button("Целиком", small=True, on_click=lambda: self.view.fit())
         ext_b = button("Открыть в программе Windows", small=True, on_click=lambda: open_path(self.path))
         close_b = button("Закрыть", primary=True, on_click=self.accept)
         name = label(title or self.path.name, h2=True)
-        self.setLayout(vbox(hbox(name, None, self.info, spacing=12), self.scroll,
+        hint = label("колесико мыши — увеличить, перетащить — сдвинуть, двойной щелчок — целиком", dim=True)
+        self.setLayout(vbox(hbox(name, None, self.info, spacing=12), self.view, hint,
                             hbox(self.prev_b, self.next_b, self.zoom_b, None, ext_b, close_b),
                             spacing=10, margins=(16, 14, 16, 14)))
         self.render()
 
-    def _pixmap(self, max_w: int, max_h: int) -> QPixmap:
+    def _pixmap(self) -> QPixmap:
+        """Страница PDF или фото в хорошем разрешении — увеличивать можно без потери четкости."""
         if self.is_pdf:
             import pymupdf
             with pymupdf.open(self.path) as doc:
                 if doc.needs_pass:
                     return QPixmap()
                 page = doc[self.page]
-                if self.zoom_fit:
-                    zoom = min(max_w / page.rect.width, max_h / page.rect.height)
-                else:
-                    zoom = 150 / 72
+                zoom = min(3.0, 2200 / max(page.rect.width, page.rect.height))
                 pix = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom))
                 img = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format_RGB888)
                 return QPixmap.fromImage(img.copy())
         from ..ocr.ocr_engine import load_image
         img = load_image(self.path)
-        if self.zoom_fit:
-            img.thumbnail((max_w, max_h))
+        img.thumbnail((3000, 3000))
         return pil_to_pixmap(img)
 
     def render(self):
-        vp = self.scroll.viewport().size()
-        pm = self._pixmap(max(vp.width() - 8, 200), max(vp.height() - 8, 200))
+        pm = self._pixmap()
         if pm.isNull():
-            self.view.setText("Файл защищен паролем — сначала снимите пароль в карточке клиента")
+            self.view.set_text("Файл защищен паролем — сначала снимите пароль в карточке клиента")
         else:
-            self.view.setPixmap(pm)
+            self.view.set_pixmap(pm)
         self.info.setText(f"стр. {self.page + 1} из {self.pages}" if self.is_pdf else "фото")
         self.prev_b.setEnabled(self.page > 0)
         self.next_b.setEnabled(self.page < self.pages - 1)
-        self.zoom_b.setText("По размеру окна" if not self.zoom_fit else "100%")
 
     def go(self, delta):
-        self.page = max(0, min(self.pages - 1, self.page + delta))
-        self.render()
-
-    def toggle_zoom(self):
-        self.zoom_fit = not self.zoom_fit
-        self.render()
+        page = max(0, min(self.pages - 1, self.page + delta))
+        if page != self.page:
+            self.page = page
+            self.render()
 
     def showEvent(self, e):
         super().showEvent(e)
-        self.render()
-
-    def resizeEvent(self, e):
-        super().resizeEvent(e)
-        if self.zoom_fit:
-            self.render()
+        self.view.fit()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Right, Qt.Key_PageDown):

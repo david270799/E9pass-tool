@@ -353,10 +353,21 @@ NAME_TOKENS = ("{ФИО}", "{фио}", "{FIO}", "{fio}")
 
 
 def name_matches_client(stem: str, client_name: str) -> bool:
-    """Имя файла — это ФИО клиента (любой регистр, порядок слов, лишнее « (2)»): ABILOV BOBORAKHIM.pdf."""
+    """Имя файла — это ФИО клиента (любой регистр, порядок слов, лишнее « (2)»): ABILOV BOBORAKHIM.pdf.
+    Одна-две опечатки допускаются (KHAHRAMONOV ≈ KAKHRAMONOV): разное написание или ошибка OCR в карточке."""
+    from difflib import SequenceMatcher
+
     file_words = re.findall(r"[a-z]+", stem.lower())
     name_words = set(re.findall(r"[a-z]+", (client_name or "").lower()))
-    return len(file_words) >= 2 and len(name_words) >= 2 and set(file_words) <= name_words
+    if len(file_words) < 2 or len(name_words) < 2:
+        return False
+
+    def close(w: str) -> bool:
+        if w in name_words:
+            return True
+        return len(w) >= 5 and any(SequenceMatcher(None, w, n).ratio() >= 0.8 for n in name_words)
+
+    return all(close(w) for w in file_words)
 
 
 def match_pattern(pat: str, stem: str, names, client_name: str = "") -> bool:
@@ -833,27 +844,35 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
     return res
 
 
+ZIP_SKIP_TYPES = {"contract"}  # договор в ZIP клиента не кладем (он есть в Master-PDF)
+
+
 def export_client_zip(db: Database, client_id: int, out_dir: Path) -> Path:
-    """ZIP клиента: originals/ (PDF без пароля) + scans/ + Master-PDF."""
+    """ZIP клиента без папок: файлы клиента (PDF без пароля) + Master-PDF.
+    Без договора и без обработанных сканов (лист ID на А4, скан оборота)."""
     client = db.client(client_id)
     if not client.master_pdf or not Path(client.master_pdf).exists():
         build_master(db, client_id)
         client = db.client(client_id)
     out = _unique(Path(out_dir) / f"{config.safe_name(client.full_name or 'client')}_{client.batch_period}.zip")
+    used = set()
+
+    def arcname(name: str) -> str:
+        stem, suffix = Path(name).stem, Path(name).suffix
+        cand, i = name, 2
+        while cand.lower() in used:
+            cand, i = f"{stem}_{i}{suffix}", i + 1
+        used.add(cand.lower())
+        return cand
+
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for d in db.documents(client_id):
-            if not d.path.exists() or d.password_status == "locked":
-                continue
-            folder = SCANS if d.is_processed_scan else ORIGINALS
-            zf.write(d.path, f"{folder}/{d.path.name}")
-        scans = client.folder / SCANS
-        if scans.exists():
-            names = set(zf.namelist())
-            for f in sorted(scans.iterdir()):
-                if f.is_file() and f"{SCANS}/{f.name}" not in names:
-                    zf.write(f, f"{SCANS}/{f.name}")
         if client.master_pdf and Path(client.master_pdf).exists():
-            zf.write(client.master_pdf, Path(client.master_pdf).name)
+            zf.write(client.master_pdf, arcname(Path(client.master_pdf).name))
+        for d in db.documents(client_id):
+            if (not d.path.exists() or d.password_status == "locked" or d.is_processed_scan
+                    or d.doc_type in ZIP_SKIP_TYPES or d.doc_type == BUILTIN_A4):
+                continue
+            zf.write(d.path, arcname(d.path.name))
     return out
 
 

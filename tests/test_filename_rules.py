@@ -57,3 +57,10 @@ def test_wage_statement_order_descending_with_parts():
             for n in ["21", "23-1", "26", "23", "25", "21-1", "22"]]
     order = [Path(d.original_name).stem for d in services._descending_with_parts(docs)]
     assert order == ["26", "25", "23", "23-1", "22", "21", "21-1"]
+
+
+def test_contract_name_with_typo(tmp_path):
+    db = Database(tmp_path / "db.sqlite3")
+    assert classify(db, "KHAHRAMONOV IBRATBEK.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == "contract"
+    assert classify(db, "kakhramonov ibratbek.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == "contract"
+    assert classify(db, "KARIMOV RUSTAM.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == ""
