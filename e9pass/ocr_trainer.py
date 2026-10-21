@@ -19,6 +19,7 @@ import sys
 import time
 import urllib.request
 import zipfile
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -152,6 +153,7 @@ def _run(cmd, log: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
          on_line: Optional[Callable[[str], None]] = None, cancel: Optional[Callable[[], bool]] = None):
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     full_env = dict(os.environ, PYTHONUTF8="1", PYTHONIOENCODING="utf-8", **(env or {}))
+    tail = deque(maxlen=12)
     with open(log, "a", encoding="utf-8") as lf:
         lf.write(f"\n$ {' '.join(map(str, cmd))}\n")
         proc = subprocess.Popen([str(c) for c in cmd], cwd=str(cwd) if cwd else None, env=full_env,
@@ -159,6 +161,8 @@ def _run(cmd, log: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
                                 encoding="utf-8", errors="replace", creationflags=flags)
         for line in proc.stdout:
             lf.write(line)
+            if line.strip():
+                tail.append(line.rstrip()[:300])
             if on_line:
                 on_line(line.rstrip())
             if cancel and cancel():
@@ -166,7 +170,8 @@ def _run(cmd, log: Path, cwd: Optional[Path] = None, env: Optional[dict] = None,
                 raise TrainError("Остановлено")
         code = proc.wait()
     if code != 0:
-        raise TrainError(f"Команда завершилась с ошибкой ({code}). Подробности: {log}")
+        raise TrainError(f"Команда завершилась с ошибкой ({code}). Подробности: {log}\n\n"
+                         "Последние строки журнала:\n" + "\n".join(tail))
 
 
 def _download(url: str, dst: Path, progress: Progress, title: str):
@@ -321,7 +326,10 @@ def _config(key: str, work: Path, data: Path, n_train: int) -> Path:
         if "MultiLabelEncode" in t and t["MultiLabelEncode"]:
             t["MultiLabelEncode"]["max_text_length"] = 40
     tr["sampler"].update(scales=[[48 * PAD_RATIO, 48]], first_bs=16)
-    tr["loader"].update(batch_size_per_card=16, num_workers=2)
+    # На Windows процессы загрузки данных стартуют заново (spawn) и повторно выполняют скрипт
+    # обучения — загрузка в основном процессе надежнее.
+    tr["loader"].update(batch_size_per_card=16, num_workers=0 if sys.platform == "win32" else 2,
+                        use_shared_memory=False)
     ev = cfg["Eval"]
     ev["dataset"].update(data_dir=str(data), label_file_list=[str(data / ("val.txt" if (data / "val.txt").exists()
                                                                             else "train.txt"))])
