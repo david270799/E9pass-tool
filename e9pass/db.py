@@ -213,6 +213,10 @@ class Database:
             rows = c.execute("SELECT * FROM clients WHERE batch_period=? ORDER BY id", (period,))
             return [self._client(r) for r in rows]
 
+    def all_clients(self) -> List[Client]:
+        with self.conn() as c:
+            return [self._client(r) for r in c.execute("SELECT * FROM clients ORDER BY id")]
+
     def client(self, client_id: int) -> Optional[Client]:
         with self.conn() as c:
             row = c.execute("SELECT * FROM clients WHERE id=?", (client_id,)).fetchone()

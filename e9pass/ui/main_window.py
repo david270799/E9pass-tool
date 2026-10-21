@@ -14,6 +14,7 @@ from .dashboard import DashboardPage
 from .doctypes import DocTypesPage
 from .intake import IntakePage
 from .printing import PrintPage
+from .training_page import TrainingPage
 from .state import AppState
 from .widgets import FullDropOverlay, button, hbox, label, vbox, wrap_label
 
@@ -58,7 +59,7 @@ class MainWindow(QMainWindow):
         # (ключ, текст, короткая подпись для свернутого меню)
         items = [("dashboard", "1   Импорт и реестр", "1"), ("intake", "      Приемка архивов", "⤓"),
                  ("client", "2   Документы клиента", "2"), ("print", "3   Печать отчетности", "3"),
-                 ("doctypes", "☰   Типы документов", "☰")]
+                 ("doctypes", "☰   Типы документов", "☰"), ("training", "◎   Обучение OCR", "◎")]
         self.nav_texts = {}
         nav_lay = vbox(spacing=4)
         for key, text, short in items:
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
             "client": ClientPage(self.state),
             "doctypes": DocTypesPage(self.state),
             "print": PrintPage(self.state),
+            "training": TrainingPage(self.state),
         }
         self.pages["intake"] = IntakePage(self.state, on_status=self.pages["dashboard"].set_import_status)
         for p in self.pages.values():
@@ -156,6 +158,10 @@ class MainWindow(QMainWindow):
             return (f"Отпустите, чтобы загрузить архивы в {period}",
                     lambda f: f.suffix.lower() in ARCHIVE_EXTENSIONS | {".e9pay"},
                     self._dropped_on_dashboard)
+        if key == "training":
+            from .. import training
+            return ("Отпустите, чтобы добавить фото карт в учебную базу",
+                    lambda f: f.suffix.lower() in training.IMAGE_EXTENSIONS, self.pages["training"].add_files)
         if key == "client" and self.pages["client"].client_id:
             page = self.pages["client"]
             c = page.client()
@@ -193,7 +199,7 @@ class MainWindow(QMainWindow):
                 return
             self.pages["client"].open(first[0].id)
         page = self.pages[key]
-        if hasattr(page, "refresh") and key in ("client", "print", "doctypes", "dashboard"):
+        if hasattr(page, "refresh") and key in ("client", "print", "doctypes", "dashboard", "training"):
             page.refresh()
         self.stack.setCurrentWidget(page)
         self.nav_buttons[key].setChecked(True)

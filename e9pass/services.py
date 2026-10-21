@@ -128,6 +128,7 @@ def intake_archive(db: Database, period: str, archive_path: Path, engine: Option
             result.photos.append(PhotoResult(f, "", "не фото"))
 
     fields, warnings = _extract_fields(engine, result.photos, progress, Path(archive_path).stem)
+    _apply_name_dictionary(db, fields)
     if any(p.doc_type == "" for p in result.photos):
         warnings.append("есть нераспознанные файлы")
 
@@ -223,6 +224,16 @@ def _read_bank(engine: OcrEngine, path: Path, lines: Optional[List[str]] = None)
     return bank_ocr.parse_bank(lines if lines is not None else engine.read_image_lines(path))
 
 
+def _apply_name_dictionary(db: Database, fields: dict):
+    """Поправить ФИО по словарю имен из проверенных клиентов и учебной базы (страница «Обучение OCR»)."""
+    from . import training
+    if fields.get("full_name"):
+        try:
+            fields["full_name"] = training.correct_with_dictionary(fields["full_name"], training.name_words(db))
+        except Exception:  # noqa: BLE001 — словарь лишь подсказка, приемку он не останавливает
+            log.exception("словарь имен")
+
+
 def _extract_fields(engine: OcrEngine, photos: List[PhotoResult], progress: Progress = _noop,
                     name_hint: str = ""):
     """Поля клиента из фото по их типам: (fields, warnings)."""
@@ -276,6 +287,7 @@ def reread_client(db: Database, client_id: int, engine: Optional[OcrEngine] = No
     client = db.client(client_id)
     hint = Path(client.source_archive).stem if client and client.source_archive else ""
     fields, warnings = _extract_fields(engine, photos, progress, hint)
+    _apply_name_dictionary(db, fields)
     if any(not d.doc_type for d in docs):
         warnings.append("есть нераспознанные файлы")
     db.update_client(client_id, **fields)
@@ -534,6 +546,7 @@ def fill_empty_from_photos(db: Database, client_id: int, engine: Optional[OcrEng
               if d.doc_type in (BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK)]
     hint = Path(client.source_archive).stem if client.source_archive else ""
     fields, _warnings = _extract_fields(engine, photos, progress, hint)
+    _apply_name_dictionary(db, fields)
     empty = {k: v for k, v in fields.items() if v and not getattr(client, k, "")}
     if empty:
         db.update_client(client_id, **empty)
