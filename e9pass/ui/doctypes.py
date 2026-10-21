@@ -44,6 +44,9 @@ class DocTypesPage(QWidget):
         self.current = None
 
         add_b = button("+  Добавить тип", primary=True, on_click=self.add_rule)
+        restore_b = button("Восстановить стандартные", on_click=self.restore_defaults)
+        restore_b.setToolTip("Вернуть удаленные стандартные типы (Договор, Страховка…) и их маски, "
+                             "например {ФИО} → Договор. Ваши типы и маски не меняются.")
         self.tree = RulesTree(self.save_order)
         self.tree.currentItemChanged.connect(lambda cur, _prev: self.edit(cur))
         hint = wrap_label("Перетаскивайте строки, чтобы менять порядок Master-PDF. Если у клиента документа "
@@ -84,7 +87,7 @@ class DocTypesPage(QWidget):
         body.addWidget(editor, 0, 1)
         body.setColumnStretch(0, 1)
         self.setLayout(vbox(hbox(vbox(label("Настройки", muted=True), label("Типы документов и очередь Master-PDF",
-                                                                           h1=True), spacing=2), None, add_b),
+                                                                           h1=True), spacing=2), None, restore_b, add_b),
                             body, spacing=16, margins=(32, 24, 32, 20)))
         self.refresh()
 
@@ -186,6 +189,18 @@ class DocTypesPage(QWidget):
             self.state.db.delete_rule(r.id)
             self.refresh()
             self.state.data_changed.emit()
+
+    def restore_defaults(self):
+        restored = self.state.db.restore_default_rules()
+        if not restored:
+            QMessageBox.information(self, "Стандартные типы", "Все стандартные типы и маски на месте.")
+            return
+        cur = self.current.id if self.current else None
+        self.refresh(select_id=cur)
+        found = services.recheck_all_unknown(self.state.db)
+        self.state.data_changed.emit()
+        QMessageBox.information(self, "Стандартные типы", "Восстановлено:\n• " + "\n• ".join(restored) +
+                                f"\n\nНераспознанных документов определено заново: {found}")
 
     def save_order(self):
         ids = [self.tree.topLevelItem(i).data(0, ROLE_ID) for i in range(self.tree.topLevelItemCount())]

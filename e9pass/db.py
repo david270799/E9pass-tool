@@ -347,6 +347,33 @@ class Database:
             c.execute("UPDATE client_documents SET doc_type='' WHERE doc_type=?", (row["code"],))
             c.execute("DELETE FROM doc_rules WHERE id=?", (rule_id,))
 
+    def restore_default_rules(self) -> List[str]:
+        """Возвращает удаленные стандартные типы и их маски/слова. Свое пользователя не трогает."""
+        restored = []
+        with self.conn() as c:
+            rows = {r["code"]: r for r in c.execute("SELECT * FROM doc_rules")}
+            last = c.execute("SELECT COALESCE(MAX(sort_order), 0) FROM doc_rules WHERE sort_order < 100").fetchone()[0]
+            for code, name, pats, words, order, in_master, prn, builtin in DEFAULT_RULES:
+                row = rows.get(code)
+                if row is None:
+                    last += 1
+                    c.execute("INSERT INTO doc_rules(code, doc_name, filename_patterns, ocr_keywords, sort_order,"
+                              " in_master, print_step3, builtin) VALUES (?,?,?,?,?,?,?,?)",
+                              (code, name, json.dumps(pats, ensure_ascii=False), json.dumps(words, ensure_ascii=False),
+                               order if builtin else last, in_master, prn, builtin))
+                    restored.append(name)
+                    continue
+                cur_pats = json.loads(row["filename_patterns"] or "[]")
+                cur_words = json.loads(row["ocr_keywords"] or "[]")
+                add_pats = [x for x in pats if x not in cur_pats]
+                add_words = [x for x in words if x not in cur_words]
+                if add_pats or add_words:
+                    c.execute("UPDATE doc_rules SET filename_patterns=?, ocr_keywords=? WHERE code=?",
+                              (json.dumps(add_pats + cur_pats, ensure_ascii=False),
+                               json.dumps(cur_words + add_words, ensure_ascii=False), code))
+                    restored.append(f"{row['doc_name']}: " + ", ".join(add_pats + add_words))
+        return restored
+
     def reorder_rules(self, ids_in_order: List[int]):
         with self.conn() as c:
             for i, rid in enumerate(ids_in_order, start=1):

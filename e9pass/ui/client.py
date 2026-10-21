@@ -404,6 +404,20 @@ class ClientPage(QWidget):
             QMessageBox.warning(self, "Пароль не подошел", "Этот пароль не подходит к файлу.")
 
     def build_master(self):
+        c = self.client()
+        old = Path(c.master_pdf) if c and c.master_pdf else None
+        if old and old.exists():
+            if QMessageBox.question(self, "Master-PDF", f"Master-PDF уже собран:\n{old.name}\n\n"
+                                    "Собрать заново? Старый файл будет удален.") != QMessageBox.Yes:
+                return
+            try:
+                old.unlink()
+            except OSError:
+                QMessageBox.warning(self, "Master-PDF", f"Не удалось удалить {old.name}.\n"
+                                    "Закройте его в программе просмотра PDF и попробуйте еще раз.")
+                return
+            self.state.db.update_client(c.id, master_pdf="")
+            self.state.data_changed.emit()
         self._busy("Собираю Master-PDF…", "проверяю пароли")
         run_task(services.build_master, self.state.db, self.client_id, on_progress=self._progress,
                  on_done=self._master_done,

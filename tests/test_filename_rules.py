@@ -64,3 +64,19 @@ def test_contract_name_with_typo(tmp_path):
     assert classify(db, "KHAHRAMONOV IBRATBEK.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == "contract"
     assert classify(db, "kakhramonov ibratbek.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == "contract"
     assert classify(db, "KARIMOV RUSTAM.pdf", "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI") == ""
+
+
+def test_restore_default_rules(tmp_path):
+    db = Database(tmp_path / "e9.sqlite3")
+    contract = next(r for r in db.rules() if r.code == "contract")
+    db.delete_rule(contract.id)
+    ins = next(r for r in db.rules() if r.code == "insurance")
+    ins.filename_patterns = ["*мой*"]
+    db.save_rule(ins)
+    assert classify(db, "Karimov Jasur.pdf") != "contract"
+    restored = db.restore_default_rules()
+    assert "Договор" in restored
+    assert classify(db, "Karimov Jasur.pdf") == "contract"
+    ins = next(r for r in db.rules() if r.code == "insurance")
+    assert "*мой*" in ins.filename_patterns and "nhis*" in ins.filename_patterns
+    assert db.restore_default_rules() == []
