@@ -32,9 +32,14 @@ CREATE TABLE IF NOT EXISTS cards (
     pred_name TEXT DEFAULT '', pred_arc TEXT DEFAULT '', pred_country TEXT DEFAULT '', pred_address TEXT DEFAULT '',
     source TEXT DEFAULT 'photo',
     added_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    checked_at TEXT DEFAULT ''
+    checked_at TEXT DEFAULT '',
+    rotation INTEGER DEFAULT 0,
+    regions TEXT DEFAULT '{}'
 );
 """
+# Области полей на фото: {"name": [x0, y0, x1, y1], ...} в долях (0..1) фото, повернутого на rotation.
+FIELDS_FRONT = ("name", "arc", "country")
+FIELDS_BACK = ("address",)
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp", ".heic"}
 
@@ -64,10 +69,20 @@ class Card:
     source: str
     added_at: str
     checked_at: str
+    rotation: int = 0
+    regions: str = "{}"
 
     @property
     def path(self) -> Path:
         return Path(self.image)
+
+    @property
+    def region_map(self) -> dict:
+        import json
+        try:
+            return {k: v for k, v in json.loads(self.regions or "{}").items() if len(v) == 4}
+        except ValueError:
+            return {}
 
 
 def _sha1(path: Path) -> str:
@@ -84,6 +99,11 @@ class TrainingStore:
         (self.path.parent / "images").mkdir(parents=True, exist_ok=True)
         with self.conn() as c:
             c.executescript(SCHEMA)
+            cols = {r[1] for r in c.execute("PRAGMA table_info(cards)")}
+            if "rotation" not in cols:
+                c.execute("ALTER TABLE cards ADD COLUMN rotation INTEGER DEFAULT 0")
+            if "regions" not in cols:
+                c.execute("ALTER TABLE cards ADD COLUMN regions TEXT DEFAULT '{}'")
 
     @contextmanager
     def conn(self):
@@ -139,19 +159,30 @@ class TrainingStore:
             r = c.execute("SELECT * FROM cards WHERE id=?", (card_id,)).fetchone()
             return Card(**dict(r)) if r else None
 
-    def set_prediction(self, card_id: int, side: str, name="", arc="", country="", address=""):
+    def set_prediction(self, card_id: int, side: str, name="", arc="", country="", address="",
+                       rotation: int = 0, regions: Optional[dict] = None):
         """Результат OCR: подставляется и как черновик ответа — человеку остается проверить."""
+        import json
         with self.conn() as c:
             c.execute("UPDATE cards SET side=?, status=?, pred_name=?, pred_arc=?, pred_country=?, pred_address=?,"
-                      " name=?, arc=?, country=?, address=? WHERE id=? AND status=?",
-                      (side, READY, name, arc, country, address, name, arc, country, address, card_id, NEW))
+                      " name=?, arc=?, country=?, address=?, rotation=?, regions=? WHERE id=? AND status=?",
+                      (side, READY, name, arc, country, address, name, arc, country, address, rotation,
+                       json.dumps(regions or {}), card_id, NEW))
 
-    def save_label(self, card_id: int, side: str, name="", arc="", country="", address=""):
+    def save_label(self, card_id: int, side: str, name="", arc="", country="", address="",
+                   rotation: Optional[int] = None, regions: Optional[dict] = None):
+        import json
+        sets, args = ("side=?, status=?, name=?, arc=?, country=?, address=?, checked_at=?",
+                      [side, DONE if side in (FRONT, BACK) else SKIP, name.strip(), arc.strip(), country.strip(),
+                       " ".join(address.split()), datetime.now().isoformat(timespec="seconds")])
+        if rotation is not None:
+            sets += ", rotation=?"
+            args.append(rotation % 360)
+        if regions is not None:
+            sets += ", regions=?"
+            args.append(json.dumps(regions))
         with self.conn() as c:
-            c.execute("UPDATE cards SET side=?, status=?, name=?, arc=?, country=?, address=?, checked_at=?"
-                      " WHERE id=?", (side, DONE if side in (FRONT, BACK) else SKIP, name.strip(), arc.strip(),
-                                      country.strip(), " ".join(address.split()),
-                                      datetime.now().isoformat(timespec="seconds"), card_id))
+            c.execute(f"UPDATE cards SET {sets} WHERE id=?", (*args, card_id))
 
     def skip(self, card_id: int):
         with self.conn() as c:
@@ -200,25 +231,79 @@ class TrainingStore:
 # ------------------------------------------------------------ предварительный OCR
 
 def predict(engine, path: Path):
-    """(сторона, поля) — что OCR видит на фото: лицо (ФИО, номер, страна) или оборот (адрес)."""
+    """(сторона, поля) — что OCR видит на фото: лицо (ФИО, номер, страна) или оборот (адрес).
+    В полях также rotation (как повернуть фото) и regions (где на фото каждое поле)."""
     from . import services
     from .ocr import detect
 
+    def front():
+        card, _lines, _img, _raw, angle = engine.read_front_detail(path)
+        vals = {"name": card.name, "arc": card.reg_no, "country": card.country}
+        return FRONT, {**vals, "rotation": angle, "regions": find_regions(engine, path, FRONT, vals, angle)}
+
+    def back():
+        addr, _w = services._read_back(engine, Path(path))
+        _lines, _img, _raw, angle = back_detail(engine, path)
+        vals = {"address": addr}
+        return BACK, {**vals, "rotation": angle, "regions": find_regions(engine, path, BACK, vals, angle)}
+
     kind, _reason = detect.classify_photo(engine.read_image_lines(path))
     if kind == detect.FRONT:
-        card, _lines = engine.read_front(path)
-        return FRONT, {"name": card.name, "arc": card.reg_no, "country": card.country}
+        return front()
     if kind == detect.BACK:
-        addr, _w = services._read_back(engine, Path(path))
-        return BACK, {"address": addr}
+        return back()
     # Тип не определился (фото повернуто, пестрый фон) — пробуем прочитать как лицо, затем как оборот.
-    card, _lines = engine.read_front(path)
-    if card.reg_no or (card.name and card.country):
-        return FRONT, {"name": card.name, "arc": card.reg_no, "country": card.country}
-    addr, _w = services._read_back(engine, Path(path))
-    if addr:
-        return BACK, {"address": addr}
+    side, fields = front()
+    if fields["arc"] or (fields["name"] and fields["country"]):
+        return side, fields
+    side, fields = back()
+    if fields["address"]:
+        return side, fields
     return OTHER, {}
+
+
+def _field_boxes(raw, side: str, vals: dict) -> dict:
+    """{поле: [рамки]} — какие строки OCR относятся к каждому полю."""
+    out = {}
+    arc = re.sub(r"\D", "", vals.get("arc", ""))
+    for box, text, _c in raw:
+        if side == FRONT:
+            if re.search(r"[가-힣]", text):
+                continue
+            digits = re.sub(r"\D", "", text)
+            if len(digits) >= 10:
+                if len(arc) == 13 and (digits[:6] == arc[:6] or digits[-7:] == arc[-7:]):
+                    out.setdefault("arc", []).append(box)
+                continue
+            country = vals.get("country", "")
+            if country and match_segment(text, country, 0.75) == _norm(country):
+                out.setdefault("country", []).append(box)
+                continue
+            if vals.get("name") and match_segment(text, vals["name"]):
+                out.setdefault("name", []).append(box)
+        elif side == BACK and vals.get("address"):
+            if not re.search(r"[가-힣]", text) or re.search(r"(?:장|사무소|출입국|외국인청)\s*$", text.strip()):
+                continue
+            body = re.sub(r"^\s*(?:19|20)\d{2}[.\s]\d{1,2}[.\s]\d{1,2}\.?\s*", "", text)
+            if len(re.sub(r"\s", "", body)) >= 4 and match_segment(body, vals["address"]):
+                out.setdefault("address", []).append(box)
+    return out
+
+
+def find_regions(engine, path: Path, side: str, vals: dict, rotation: int) -> dict:
+    """Области полей на фото (повернутом на rotation), в долях 0..1 — чтобы показать и поправить."""
+    from .ocr.ocr_engine import load_image, resize_max
+
+    photo = load_image(path)
+    img = resize_max(photo.rotate(rotation, expand=True) if rotation else photo)
+    raw = engine.readtext(img, latin=side == FRONT)
+    regions = {}
+    for field, boxes in _field_boxes(raw, side, vals).items():
+        xs = [p[0] for b in boxes for p in b]
+        ys = [p[1] for b in boxes for p in b]
+        regions[field] = [round(max(0, min(xs)) / img.width, 4), round(max(0, min(ys)) / img.height, 4),
+                          round(min(img.width, max(xs)) / img.width, 4), round(min(img.height, max(ys)) / img.height, 4)]
+    return regions
 
 
 def predict_pending(store: TrainingStore, engine=None, progress: Callable[[str], None] = lambda _m: None) -> int:
@@ -337,7 +422,7 @@ def _crop(img, box, pad_ratio: float = 0.15):
 
 
 def back_detail(engine, path: Path):
-    """Оборот в лучшем положении: (строки, изображение, фрагменты OCR) — как при приемке."""
+    """Оборот в лучшем положении: (строки, изображение, фрагменты OCR, поворот) — как при приемке."""
     from .ocr import back as back_ocr
     from .ocr.ocr_engine import crop_card, group_lines, load_image, resize_max
 
@@ -349,42 +434,74 @@ def back_detail(engine, path: Path):
         lines = group_lines(raw)
         key = back_ocr.orientation_score(lines)
         if best is None or key > best[0]:
-            best = (key, lines, img, raw)
-    return best[1], best[2], best[3]
+            best = (key, lines, img, raw, angle)
+    return best[1], best[2], best[3], best[4]
+
+
+def _labels(card: Card) -> dict:
+    fields = FIELDS_FRONT if card.side == FRONT else FIELDS_BACK
+    vals = {f: getattr(card, f) for f in fields if getattr(card, f)}
+    if vals.get("arc"):
+        d = re.sub(r"\D", "", vals["arc"])
+        vals["arc"] = f"{d[:6]}-{d[6:]}" if len(d) == 13 else vals["arc"]
+    return vals
+
+
+def _lines_from_boxes(engine, img, raw, side: str, vals: dict, only=None):
+    model = LATIN if side == FRONT else KOREAN
+    out = []
+    for field, boxes in _field_boxes(raw, side, vals).items():
+        if only and field not in only:
+            continue
+        for box in boxes:
+            text = next(t for b, t, _c in raw if b is box)
+            if field == "arc":
+                label = vals["arc"]
+            elif field == "country":
+                label = _norm(vals["country"])
+            else:
+                body = re.sub(r"^\s*(?:19|20)\d{2}[.\s]\d{1,2}[.\s]\d{1,2}\.?\s*", "", text)
+                label = match_segment(body, vals[field])
+            if label and len(label.replace(" ", "")) >= 3:
+                out.append((model, engine.upright(_crop(img, box)), label))
+    return out
 
 
 def card_lines(engine, card: Card):
-    """[(модель, картинка строки, правильный текст)] с одной размеченной карты."""
+    """[(модель, картинка строки, правильный текст)] с одной размеченной карты.
+    Если на карте отмечены области полей — строки ищутся только внутри них."""
+    from .ocr.ocr_engine import load_image, resize_max
+
+    if card.side not in (FRONT, BACK):
+        return []
+    vals = _labels(card)
+    if not vals:
+        return []
     out = []
-    if card.side == FRONT:
-        _data, _lines, img, raw = engine.read_front_detail(card.path)
-        arc = re.sub(r"\D", "", card.arc)
-        for box, text, _c in raw:
-            if re.search(r"[가-힣]", text):
+    regions = {f: r for f, r in card.region_map.items() if f in vals}
+    if regions:
+        photo = load_image(card.path)
+        photo = photo.rotate(card.rotation, expand=True) if card.rotation else photo
+        for field, (x0, y0, x1, y1) in regions.items():
+            w, h = photo.width, photo.height
+            pad = 0.01
+            box = (max(0, (x0 - pad) * w), max(0, (y0 - pad) * h), min(w, (x1 + pad) * w), min(h, (y1 + pad) * h))
+            if box[2] - box[0] < 8 or box[3] - box[1] < 8:
                 continue
-            digits = re.sub(r"\D", "", text)
-            if len(arc) == 13 and len(digits) >= 10:
-                if digits[:6] == arc[:6] or digits[-7:] == arc[-7:] or len(digits) >= 12:
-                    out.append((LATIN, engine.upright(_crop(img, box)), f"{arc[:6]}-{arc[6:]}"))
+            if field in ("arc", "country"):  # однострочное поле: рамка и есть строка
+                label = vals["arc"] if field == "arc" else _norm(vals["country"])
+                out.append((LATIN, engine.upright(photo.crop(box)), label))
                 continue
-            if card.country and match_segment(text, card.country, 0.75) == _norm(card.country):
-                out.append((LATIN, engine.upright(_crop(img, box)), _norm(card.country)))
-                continue
-            if card.name:
-                seg = match_segment(text, card.name)
-                if seg and len(seg.replace(" ", "")) >= 3:
-                    out.append((LATIN, engine.upright(_crop(img, box)), seg))
-    elif card.side == BACK and card.address:
-        _lines, img, raw = back_detail(engine, card.path)
-        for box, text, _c in raw:
-            # штампы колонки 확인 («김해시장», «…출입국») и короткие обрывки — не адрес
-            if not re.search(r"[가-힣]", text) or re.search(r"(?:장|사무소|출입국|외국인청)\s*$", text.strip()):
-                continue
-            if len(re.sub(r"\s", "", text)) < 6:
-                continue
-            seg = match_segment(re.sub(r"^\s*(?:19|20)\d{2}[.\s]\d{1,2}[.\s]\d{1,2}\.?\s*", "", text), card.address)
-            if seg and len(seg.replace(" ", "")) >= 3:
-                out.append((KOREAN, engine.upright(_crop(img, box)), seg))
+            crop = resize_max(photo.crop(box), target=1600, upscale=True)
+            raw = engine.readtext(crop, latin=card.side == FRONT)
+            out += _lines_from_boxes(engine, crop, raw, card.side, {field: vals[field]}, only={field})
+    rest = {f: v for f, v in vals.items() if f not in regions}
+    if rest:  # поля без отмеченной области — по всей карте, как при приемке
+        if card.side == FRONT:
+            _data, _lines, img, raw, _angle = engine.read_front_detail(card.path)
+        else:
+            _lines, img, raw, _angle = back_detail(engine, card.path)
+        out += _lines_from_boxes(engine, img, raw, card.side, rest, only=set(rest))
     return out
 
 

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QButtonGroup, QGridLayout, QLineEdit, QListWidget
 from .. import training
 from ..ocr.ocr_engine import load_image
 from . import theme
-from .preview import ZoomView
+from .region_view import RegionView
 from .widgets import DropZone, button, clear_layout, frame, hbox, label, pil_to_pixmap, run_task, vbox, wrap_label
 
 STATUS_TEXT = {training.NEW: ("ждет OCR", "#8C8C8C"), training.READY: ("проверить", "#F5C518"),
@@ -199,14 +199,10 @@ class TrainingPage(QWidget):
             self.panel_lay.addStretch(1)
             return
 
-        view = ZoomView()
-        try:
-            img = load_image(card.path)
-            img.thumbnail((2400, 2400))
-            view.set_pixmap(pil_to_pixmap(img))
-        except Exception as e:  # noqa: BLE001
-            view.set_text(f"Не удалось открыть фото: {e}")
+        view = RegionView()
         self.view = view
+        self.rotation = card.rotation or 0
+        self._show_photo(card.region_map)
 
         # сторона карты
         self.side = card.side if card.side in (training.FRONT, training.BACK) else training.FRONT
@@ -226,6 +222,11 @@ class TrainingPage(QWidget):
         pill.setStyleSheet(f"background:{color};color:#121212;border-radius:9px;padding:1px 10px;font-weight:800;")
         seg.addWidget(pill)
 
+        def field_label(text, field):
+            b = button("⌖ область", small=True, flat=True, on_click=lambda: self.view.mark(field))
+            b.setToolTip("Поставить рамку поля заново — потом потяните за углы")
+            return hbox(label(text, dim=True), None, b, spacing=6)
+
         big = "font-size:18px;font-weight:700;padding:6px 10px;"
         self.f_name = QLineEdit(card.name)
         self.f_name.setPlaceholderText("ФИО латиницей, как на карте")
@@ -242,12 +243,13 @@ class TrainingPage(QWidget):
             f.returnPressed.connect(self.confirm)
 
         self.front_box = QWidget()
-        self.front_box.setLayout(vbox(label("ФИО", dim=True), self.f_name,
-                                      hbox(vbox(label("Номер ARC", dim=True), self.f_arc, spacing=4),
-                                           vbox(label("Страна", dim=True), self.f_country, spacing=4), spacing=10),
+        self.front_box.setLayout(vbox(field_label("ФИО", "name"), self.f_name,
+                                      hbox(vbox(field_label("Номер ARC", "arc"), self.f_arc, spacing=4),
+                                           vbox(field_label("Страна", "country"), self.f_country, spacing=4),
+                                           spacing=10),
                                       spacing=4))
         self.back_box = QWidget()
-        self.back_box.setLayout(vbox(label("Адрес (последний)", dim=True), self.f_address, spacing=4))
+        self.back_box.setLayout(vbox(field_label("Адрес (последний)", "address"), self.f_address, spacing=4))
         ocr_note = ""
         if card.pred_name or card.pred_arc or card.pred_address:
             ocr_note = "OCR прочитал: " + " · ".join(x for x in (card.pred_name, card.pred_arc, card.pred_address) if x)
@@ -259,8 +261,10 @@ class TrainingPage(QWidget):
             note = wrap_label(ocr_note, dim=True)
             self.panel_lay.addWidget(note)
         self.panel_lay.addWidget(view, 1)
-        self.panel_lay.addWidget(label("Колесико — увеличить · перетащить — сдвинуть · двойной щелчок — целиком",
-                                       dim=True))
+        rot_b = button("⟳ Повернуть фото", small=True, on_click=self.rotate_photo)
+        self.panel_lay.addLayout(hbox(
+            label("Рамки — где программа нашла поля; если неверно, потяните за углы или «⌖ область» · "
+                  "колесико — увеличить · двойной щелчок — целиком", dim=True), None, rot_b, spacing=10))
         ok_b = button("Верно ✓  (Enter)", primary=True, on_click=self.confirm)
         skip_b = button("Пропустить", on_click=self.skip)
         del_b = button("Удалить", on_click=self.delete)
@@ -268,6 +272,22 @@ class TrainingPage(QWidget):
         self.panel_lay.addLayout(hbox(del_b, None, skip_b, ok_b))
         self._set_side(card.side if card.side in (training.FRONT, training.BACK, training.OTHER) else training.FRONT)
         (self.f_address if self.side == training.BACK else self.f_name).setFocus()
+
+    def _show_photo(self, regions: dict):
+        try:
+            img = load_image(self.current.path)
+            if self.rotation:
+                img = img.rotate(self.rotation, expand=True)
+            img.thumbnail((2400, 2400))
+            self.view.set_pixmap(pil_to_pixmap(img))
+            self.view.set_regions(regions)
+        except Exception as e:  # noqa: BLE001
+            self.view.set_text(f"Не удалось открыть фото: {e}")
+
+    def rotate_photo(self):
+        """Повернуть фото на 90° по часовой; рамки после поворота ставятся заново."""
+        self.rotation = (self.rotation - 90) % 360
+        self._show_photo({})
 
     def _set_side(self, side):
         self.side = side
@@ -284,11 +304,15 @@ class TrainingPage(QWidget):
         if self.side == training.BACK and not self.f_address.text().strip():
             QMessageBox.information(self, "Обучение OCR", "Впишите адрес — или отметьте «Не карта».")
             return
+        regions = self.view.regions()
         if self.side == training.FRONT:
+            regions = {k: v for k, v in regions.items() if k in training.FIELDS_FRONT}
             self.store.save_label(c.id, training.FRONT, name=self.f_name.text().upper(), arc=self.f_arc.text(),
-                                  country=self.f_country.text().upper())
+                                  country=self.f_country.text().upper(), rotation=self.rotation, regions=regions)
         elif self.side == training.BACK:
-            self.store.save_label(c.id, training.BACK, address=self.f_address.text())
+            regions = {k: v for k, v in regions.items() if k in training.FIELDS_BACK}
+            self.store.save_label(c.id, training.BACK, address=self.f_address.text(), rotation=self.rotation,
+                                  regions=regions)
         else:
             self.store.save_label(c.id, training.OTHER)
         self._advance()

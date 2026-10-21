@@ -63,3 +63,29 @@ def test_match_segment_handles_wraps():
     addr = "경상남도 밀양시 하남읍 시동3리2길 9-1, 504호"
     assert training.match_segment("경상남도 밀양시 하남읍 시동3리2", addr) == "경상남도 밀양시 하남읍 시동3리2"
     assert training.match_segment("길9-1.504호", addr) == "길 9-1, 504호"
+
+
+def test_regions_saved_with_label_and_migrated(tmp_path):
+    import sqlite3
+    path = tmp_path / "t" / "training.sqlite3"
+    store = training.TrainingStore(path)
+    cid = store.add_image(make_photo(tmp_path / "a.jpg"))
+    store.set_prediction(cid, training.FRONT, name="KARIMOV JASUR", rotation=90,
+                         regions={"name": [0.2, 0.4, 0.5, 0.5]})
+    assert store.card(cid).rotation == 90 and store.card(cid).region_map == {"name": [0.2, 0.4, 0.5, 0.5]}
+    store.save_label(cid, training.FRONT, name="KARIMOV JASUR", rotation=180,
+                     regions={"name": [0.1, 0.4, 0.6, 0.55], "arc": [0.1, 0.3, 0.5, 0.35]})
+    c = store.card(cid)
+    assert c.rotation == 180 and set(c.region_map) == {"name", "arc"}
+    # старая база без колонок rotation / regions получает их при открытии
+    old = tmp_path / "old.sqlite3"
+    with sqlite3.connect(old) as con:
+        con.execute("CREATE TABLE cards (id INTEGER PRIMARY KEY AUTOINCREMENT, image TEXT NOT NULL, image_hash TEXT"
+                    " UNIQUE, original_name TEXT DEFAULT '', side TEXT DEFAULT '', status TEXT DEFAULT 'new',"
+                    " name TEXT DEFAULT '', arc TEXT DEFAULT '', country TEXT DEFAULT '', address TEXT DEFAULT '',"
+                    " pred_name TEXT DEFAULT '', pred_arc TEXT DEFAULT '', pred_country TEXT DEFAULT '',"
+                    " pred_address TEXT DEFAULT '', source TEXT DEFAULT 'photo', added_at TEXT DEFAULT '',"
+                    " checked_at TEXT DEFAULT '')")
+    s2 = training.TrainingStore(old)
+    s2.add_image(make_photo(tmp_path / "b.jpg", "gray"))
+    assert s2.cards()[0].region_map == {}

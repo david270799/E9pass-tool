@@ -335,11 +335,11 @@ class OcrEngine:
 
     def read_front(self, path) -> Tuple[CardData, List[str]]:
         """Лицевая сторона ID: (поля карты, сырые строки)."""
-        data, lines, _img, _raw = self.read_front_detail(path)
+        data, lines, _img, _raw, _angle = self.read_front_detail(path)
         return data, lines
 
     def read_front_detail(self, path):
-        """(поля карты, строки, изображение в лучшем положении, фрагменты OCR с рамками)."""
+        """(поля карты, строки, изображение в лучшем положении, фрагменты OCR с рамками, поворот)."""
         photo = load_image(path)
         corners = find_card_corners(photo)
         card = photo if corners is None else crop_card(photo)
@@ -356,7 +356,7 @@ class OcrEngine:
                 d = t[1]
                 if (front_orientation_ok(t[2]) and d.reg_no and d.name and d.country
                         and reg_no_checksum_ok(d.reg_no)):
-                    return d, t[2], t[3], t[4]
+                    return d, t[2], t[3], t[4], t[0]
             if corners is None:
                 # Края карты не нашлись (пестрый фон): вырезаем карту по области с текстом
                 # в лучшем положении и читаем ее крупнее.
@@ -367,7 +367,7 @@ class OcrEngine:
                     t = (best[0], *t[1:])  # тот же поворот — для объединения полей ниже
                     tried.append(t)
                     if front_orientation_ok(t[2]) and t[1].reg_no and t[1].name and reg_no_checksum_ok(t[1].reg_no):
-                        return t[1], t[2], t[3], t[4]
+                        return t[1], t[2], t[3], t[4], t[0]
         angle, best, lines, best_img, best_raw = max(tried, key=self._front_rank)
         # Чего не хватило — берем из другого прохода с тем же поворотом.
         for a2, other, *_rest in sorted(tried, key=self._front_rank, reverse=True):
@@ -391,7 +391,7 @@ class OcrEngine:
         for key, word in (("reg_no", "номер"), ("name", "ФИО"), ("country", "страна")):
             if getattr(best, key):
                 best.warnings = [w for w in best.warnings if not w.startswith(word)]
-        return best, lines, best_img, best_raw
+        return best, lines, best_img, best_raw, angle
 
     def upright(self, crop: Image.Image) -> Image.Image:
         """Строка, перевернутая вверх ногами, разворачивается (классификатор поворота RapidOCR)."""
