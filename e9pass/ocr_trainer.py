@@ -197,6 +197,28 @@ def _download(url: str, dst: Path, progress: Progress, title: str):
 
 # ------------------------------------------------------------ установка инструментов
 
+def _extract_stripped(arc: Path, dest: Path):
+    """Распаковка архива GitHub сразу в dest без верхней папки «PaddleOCR-<commit>».
+    Переименование папки после распаковки на Windows падает с «Отказано в доступе»:
+    антивирус и индексатор еще держат только что созданные файлы."""
+    dest.mkdir(parents=True, exist_ok=True)
+    root = dest.resolve()
+    with zipfile.ZipFile(arc) as zf:
+        for info in zf.infolist():
+            rel = info.filename.split("/", 1)[1] if "/" in info.filename else ""
+            if not rel:
+                continue
+            target = (dest / rel).resolve()
+            if root != target and root not in target.parents:
+                continue
+            if info.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
 def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
     """Один раз: uv + Python 3.12 + PaddlePaddle + PaddleOCR + исходные веса моделей (~2 ГБ)."""
     tk = toolkit_dir()
@@ -233,12 +255,10 @@ def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
                 if i == len(urls) - 1:
                     raise
         progress("Распаковка PaddleOCR")
-        with zipfile.ZipFile(arc) as zf:
-            top = zf.namelist()[0].split("/")[0]
-            zf.extractall(tk)
-        shutil.rmtree(paddleocr_dir(), ignore_errors=True)
-        (tk / top).rename(paddleocr_dir())
+        _extract_stripped(arc, paddleocr_dir())
         arc.unlink(missing_ok=True)
+        for old in tk.glob("PaddleOCR-*"):  # остаток прежней неудачной установки
+            shutil.rmtree(old, ignore_errors=True)
     # 3. Python 3.12 и пакеты
     if not env_python().exists():
         progress("Python 3.12 для обучения")
