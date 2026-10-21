@@ -51,3 +51,15 @@ def test_dictionary_correction():
     assert training.correct_with_dictionary("ABDURAKHMQNQVICH", words) == "ABDURAKHMONOVICH"  # 2 ошибки в длинном
     assert training.correct_with_dictionary("JASUP", words) == "JASUP"          # короткие слова не трогаем
     assert training.correct_with_dictionary("SHERZOD", words) == "SHERZOD"      # нет похожих — как есть
+
+
+def test_match_segment_handles_wraps():
+    label = "KAKHRAMONOV IBRATBEK IBROKHIMJON UGLI"
+    assert training.match_segment("KAKHRAMONOV IBRA-", label) == "KAKHRAMONOV IBRA-"
+    assert training.match_segment("TBEK IBROKHIMJON", label) == "TBEK IBROKHIMJON"
+    assert training.match_segment("UGL", label) == "UGLI"
+    assert training.match_segment("IRKINOVASILBEK", "IRKINOV ASILBEK BAHTIYOR UGLI") == "IRKINOV ASILBEK"
+    assert training.match_segment("UZBEKISTAN", label) == ""
+    addr = "경상남도 밀양시 하남읍 시동3리2길 9-1, 504호"
+    assert training.match_segment("경상남도 밀양시 하남읍 시동3리2", addr) == "경상남도 밀양시 하남읍 시동3리2"
+    assert training.match_segment("길9-1.504호", addr) == "길 9-1, 504호"

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QLineEdit, QListWidget, QListWidgetItem,
+from PySide6.QtWidgets import (QButtonGroup, QGridLayout, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPushButton, QWidget)
 
 from .. import training
@@ -34,7 +34,7 @@ class TrainingPage(QWidget):
         clients_b = button("Взять из клиентов программы", on_click=self.import_clients)
         clients_b.setToolTip("Фото лица и оборота клиентов с уже проверенными ФИО, номером и адресом")
         self.train_b = button("Обучить модель…", on_click=self.train)
-        self.train_b.setToolTip("Дообучение моделей на размеченных картах — следующий шаг")
+        self.train_b.setToolTip("Дообучить модели распознавания на проверенных картах (офлайн)")
         intro = wrap_label(
             "Перетащите сюда фото ID-карт (лицо и оборот вперемешку). Программа прочитает каждую — сверьте с фото, "
             "исправьте ошибки и нажмите «Верно ✓» (Enter). Клиенты не создаются: это учебная база, она хранится "
@@ -310,9 +310,5 @@ class TrainingPage(QWidget):
         self._select_next()
 
     def train(self):
-        st = self.store.stats()
-        QMessageBox.information(
-            self, "Обучение модели",
-            f"Проверено карт: {st[training.DONE]} (лицо {st['front']}, оборот {st['back']}).\n\n"
-            "Дообучение моделей — следующий шаг, он появится в ближайшем обновлении. Продолжайте размечать: "
-            "для заметного эффекта нужно от 100 карт, для хорошего — 300–400.")
+        from .train_dialog import TrainDialog
+        TrainDialog(self.store, self).exec()

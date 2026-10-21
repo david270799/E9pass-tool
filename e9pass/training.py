@@ -279,3 +279,143 @@ def correct_with_dictionary(name: str, words: Set[str]) -> str:
         close = [k for k in words if abs(len(k) - len(w)) <= limit and _levenshtein(w, k) <= limit]
         out.append(close[0] if len(close) == 1 else w)
     return " ".join(out)
+
+
+# ------------------------------------------------------------ учебный набор строк
+
+LATIN, KOREAN = "latin", "korean"
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().upper()
+
+
+def _segments(label: str):
+    """Куски правильного ответа, которыми может быть одна строка на карте: целые слова подряд,
+    а на краях — часть слова (перенос: «IBRA-» / «TBEK», «시동3리2» / «길 9-1»)."""
+    words = label.split()
+    n = len(words)
+    latin = label.isascii()  # латинское слово на карте переносится только с дефисом
+    for i in range(n):
+        for j in range(i + 1, n + 1):
+            seg = " ".join(words[i:j])
+            yield seg
+            last = words[j - 1]
+            for k in range(1, len(last)):               # конец строки — начало слова
+                head = " ".join(words[i:j - 1] + [last[:k]])
+                if not latin:
+                    yield head
+                yield head + "-"
+            first = words[i]
+            for k in range(1, len(first)):              # начало строки — конец слова
+                yield " ".join([first[k:]] + words[i + 1:j])
+
+
+def match_segment(ocr_text: str, label: str, min_ratio: float = 0.72) -> str:
+    """Какой кусок правильного ответа написан в этой строке карты ('' — не похоже)."""
+    from difflib import SequenceMatcher
+
+    t = _norm(ocr_text)
+    if len(t.replace(" ", "")) < 2:
+        return ""
+    best, best_r = "", 0.0
+    for seg in _segments(_norm(label)):
+        if abs(len(seg) - len(t)) > max(4, len(t) // 2):
+            continue
+        r = SequenceMatcher(None, t, seg).ratio()
+        if r > best_r or (r == best_r and len(seg) > len(best)):
+            best, best_r = seg, r
+    return best if best_r >= min_ratio else ""
+
+
+def _crop(img, box, pad_ratio: float = 0.15):
+    xs, ys = [p[0] for p in box], [p[1] for p in box]
+    h = max(ys) - min(ys)
+    pad = pad_ratio * h
+    return img.crop((max(0, min(xs) - pad), max(0, min(ys) - pad),
+                     min(img.width, max(xs) + pad), min(img.height, max(ys) + pad)))
+
+
+def back_detail(engine, path: Path):
+    """Оборот в лучшем положении: (строки, изображение, фрагменты OCR) — как при приемке."""
+    from .ocr import back as back_ocr
+    from .ocr.ocr_engine import crop_card, group_lines, load_image, resize_max
+
+    card = resize_max(crop_card(load_image(path)))
+    best = None
+    for angle in (0, 90, 270, 180):
+        img = card.rotate(angle, expand=True) if angle else card
+        raw = engine.readtext(img)
+        lines = group_lines(raw)
+        key = back_ocr.orientation_score(lines)
+        if best is None or key > best[0]:
+            best = (key, lines, img, raw)
+    return best[1], best[2], best[3]
+
+
+def card_lines(engine, card: Card):
+    """[(модель, картинка строки, правильный текст)] с одной размеченной карты."""
+    out = []
+    if card.side == FRONT:
+        _data, _lines, img, raw = engine.read_front_detail(card.path)
+        arc = re.sub(r"\D", "", card.arc)
+        for box, text, _c in raw:
+            if re.search(r"[가-힣]", text):
+                continue
+            digits = re.sub(r"\D", "", text)
+            if len(arc) == 13 and len(digits) >= 10:
+                if digits[:6] == arc[:6] or digits[-7:] == arc[-7:] or len(digits) >= 12:
+                    out.append((LATIN, engine.upright(_crop(img, box)), f"{arc[:6]}-{arc[6:]}"))
+                continue
+            if card.country and match_segment(text, card.country, 0.75) == _norm(card.country):
+                out.append((LATIN, engine.upright(_crop(img, box)), _norm(card.country)))
+                continue
+            if card.name:
+                seg = match_segment(text, card.name)
+                if seg and len(seg.replace(" ", "")) >= 3:
+                    out.append((LATIN, engine.upright(_crop(img, box)), seg))
+    elif card.side == BACK and card.address:
+        _lines, img, raw = back_detail(engine, card.path)
+        for box, text, _c in raw:
+            # штампы колонки 확인 («김해시장», «…출입국») и короткие обрывки — не адрес
+            if not re.search(r"[가-힣]", text) or re.search(r"(?:장|사무소|출입국|외국인청)\s*$", text.strip()):
+                continue
+            if len(re.sub(r"\s", "", text)) < 6:
+                continue
+            seg = match_segment(re.sub(r"^\s*(?:19|20)\d{2}[.\s]\d{1,2}[.\s]\d{1,2}\.?\s*", "", text), card.address)
+            if seg and len(seg.replace(" ", "")) >= 3:
+                out.append((KOREAN, engine.upright(_crop(img, box)), seg))
+    return out
+
+
+def build_dataset(store: TrainingStore, engine=None, out_dir: Optional[Path] = None,
+                  progress: Callable[[str], None] = lambda _m: None) -> dict:
+    """Вырезает строки из проверенных карт: out_dir/{latin,korean}/{train,val}.txt + images/.
+    Каждая пятая карта (по содержимому фото) — проверочная, в обучение не попадает."""
+    from .ocr.ocr_engine import OcrEngine
+
+    engine = engine or OcrEngine.get()
+    out_dir = Path(out_dir or training_dir() / "dataset")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    counts = {f"{m}_{s}": 0 for m in (LATIN, KOREAN) for s in ("train", "val")}
+    files = {}
+    cards = [c for c in store.cards(DONE) if c.side in (FRONT, BACK)]
+    for i, card in enumerate(cards, 1):
+        progress(f"Строки с карт {i}/{len(cards)}")
+        split = "val" if int(card.image_hash[:8], 16) % 5 == 0 else "train"
+        try:
+            items = card_lines(engine, card)
+        except Exception:  # noqa: BLE001 — одна битая карта не останавливает сборку
+            continue
+        for n, (model, crop, text) in enumerate(items):
+            folder = out_dir / model / "images"
+            folder.mkdir(parents=True, exist_ok=True)
+            name = f"{card.id:05d}_{n:02d}.png"
+            crop.convert("RGB").save(folder / name)
+            key = (model, split)
+            files.setdefault(key, []).append(f"images/{name}\t{text}")
+            counts[f"{model}_{split}"] += 1
+    for (model, split), rows in files.items():
+        (out_dir / model / f"{split}.txt").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return counts

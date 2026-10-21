@@ -217,7 +217,19 @@ def rapidocr_params() -> dict:
     if all((mdir / f).exists() for f in MODEL_FILES):
         params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
                        "Rec.model_path": str(mdir / REC_MODEL)})
+    _use_trained(params, "korean")
     return params
+
+
+def _use_trained(params: dict, key: str):
+    """Дообученная на ваших картах модель (страница «Обучение OCR»), если подключена."""
+    try:
+        from ..ocr_trainer import active_model
+        trained = active_model(key)
+    except Exception:  # noqa: BLE001
+        trained = None
+    if trained:
+        params["Rec.model_path"] = str(trained)
 
 
 def latin_params() -> dict:
@@ -228,6 +240,7 @@ def latin_params() -> dict:
     if all((mdir / f).exists() for f in MODEL_FILES):
         params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
                        "Rec.model_path": str(mdir / LAT_MODEL)})
+    _use_trained(params, "latin")
     return params
 
 
@@ -322,6 +335,11 @@ class OcrEngine:
 
     def read_front(self, path) -> Tuple[CardData, List[str]]:
         """Лицевая сторона ID: (поля карты, сырые строки)."""
+        data, lines, _img, _raw = self.read_front_detail(path)
+        return data, lines
+
+    def read_front_detail(self, path):
+        """(поля карты, строки, изображение в лучшем положении, фрагменты OCR с рамками)."""
         photo = load_image(path)
         corners = find_card_corners(photo)
         card = photo if corners is None else crop_card(photo)
@@ -338,7 +356,7 @@ class OcrEngine:
                 d = t[1]
                 if (front_orientation_ok(t[2]) and d.reg_no and d.name and d.country
                         and reg_no_checksum_ok(d.reg_no)):
-                    return d, t[2]
+                    return d, t[2], t[3], t[4]
             if corners is None:
                 # Края карты не нашлись (пестрый фон): вырезаем карту по области с текстом
                 # в лучшем положении и читаем ее крупнее.
@@ -349,7 +367,7 @@ class OcrEngine:
                     t = (best[0], *t[1:])  # тот же поворот — для объединения полей ниже
                     tried.append(t)
                     if front_orientation_ok(t[2]) and t[1].reg_no and t[1].name and reg_no_checksum_ok(t[1].reg_no):
-                        return t[1], t[2]
+                        return t[1], t[2], t[3], t[4]
         angle, best, lines, best_img, best_raw = max(tried, key=self._front_rank)
         # Чего не хватило — берем из другого прохода с тем же поворотом.
         for a2, other, *_rest in sorted(tried, key=self._front_rank, reverse=True):
@@ -373,7 +391,13 @@ class OcrEngine:
         for key, word in (("reg_no", "номер"), ("name", "ФИО"), ("country", "страна")):
             if getattr(best, key):
                 best.warnings = [w for w in best.warnings if not w.startswith(word)]
-        return best, lines
+        return best, lines, best_img, best_raw
+
+    def upright(self, crop: Image.Image) -> Image.Image:
+        """Строка, перевернутая вверх ногами, разворачивается (классификатор поворота RapidOCR)."""
+        with self._run_lock:
+            out = self.reader._load_cls_model()([np.array(crop.convert("RGB"))[:, :, ::-1]])
+        return Image.fromarray(out.img_list[0][:, :, ::-1])
 
     def reread_reg_no(self, img: Image.Image, raw) -> str:
         """Номер ARC прочитан с ошибкой («9308205760:8»): вырезаем строку с цифрами с запасом
