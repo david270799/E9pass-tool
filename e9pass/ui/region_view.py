@@ -63,6 +63,10 @@ class RegionBox:
     def rect(self) -> QRectF:
         return self.rect_item.rect()
 
+    def set_visible(self, on: bool):
+        for it in [self.rect_item, self.label, *self.handles]:
+            it.setVisible(on)
+
     def remove(self, scene):
         for it in [self.rect_item, self.label, *self.handles]:
             scene.removeItem(it)
@@ -72,6 +76,7 @@ class RegionView(ZoomView):
     def __init__(self):
         super().__init__()
         self.boxes = {}
+        self.show_boxes = True
 
     def set_pixmap(self, pm):
         self.boxes = {}
@@ -86,6 +91,7 @@ class RegionView(ZoomView):
         w, h = self.item.pixmap().width(), self.item.pixmap().height()
         for field, (x0, y0, x1, y1) in regions.items():
             self.boxes[field] = RegionBox(self.scene(), field, QRectF(x0 * w, y0 * h, (x1 - x0) * w, (y1 - y0) * h))
+            self.boxes[field].set_visible(self.show_boxes)
 
     def regions(self) -> dict:
         if not self.item:
@@ -108,6 +114,17 @@ class RegionView(ZoomView):
         w, h = visible.width() * 0.5, visible.height() * 0.12
         rect = QRectF(visible.center().x() - w / 2, visible.center().y() - h / 2, w, h)
         self.boxes[field] = RegionBox(self.scene(), field, rect)
+        self.set_boxes_visible(True)
+
+    def set_boxes_visible(self, on: bool):
+        """Рамки можно скрыть, чтобы не мешали смотреть на фото (сами области сохраняются)."""
+        self.show_boxes = on
+        for b in self.boxes.values():
+            b.set_visible(on)
+        self.boxes_toggled(on)
+
+    def boxes_toggled(self, on: bool):  # переопределяется страницей — чтобы обновить галочку
+        pass
 
     def mouseDoubleClickEvent(self, e):
         # двойной щелчок по точке не должен сбрасывать масштаб

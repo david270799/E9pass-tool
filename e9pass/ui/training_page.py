@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtWidgets import (QButtonGroup, QGridLayout, QLineEdit, QListWidget, QListWidgetItem,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QGridLayout, QLineEdit, QListWidget, QListWidgetItem,
                                QMessageBox, QPushButton, QWidget)
 
 from .. import training
@@ -27,6 +27,7 @@ class TrainingPage(QWidget):
         self.current = None
         self.filter = None
         self.ocr_running = False
+        self.show_boxes = True  # галочка «Показывать рамки» запоминается между картами
 
         title = label("Обучение OCR", h1=True)
         self.stats = label("", muted=True)
@@ -200,6 +201,7 @@ class TrainingPage(QWidget):
             return
 
         view = RegionView()
+        view.show_boxes = self.show_boxes
         self.view = view
         self.rotation = card.rotation or 0
         self._show_photo(card.region_map)
@@ -262,9 +264,15 @@ class TrainingPage(QWidget):
             self.panel_lay.addWidget(note)
         self.panel_lay.addWidget(view, 1)
         rot_b = button("⟳ Повернуть фото", small=True, on_click=self.rotate_photo)
+        self.boxes_cb = QCheckBox("Показывать рамки")
+        self.boxes_cb.setChecked(self.show_boxes)
+        self.boxes_cb.toggled.connect(self._toggle_boxes)
+        view.boxes_toggled = lambda on: (self.boxes_cb.blockSignals(True), self.boxes_cb.setChecked(on),
+                                         self.boxes_cb.blockSignals(False), setattr(self, "show_boxes", on))
         self.panel_lay.addLayout(hbox(
-            label("Рамки — где программа нашла поля; если неверно, потяните за углы или «⌖ область» · "
-                  "колесико — увеличить · двойной щелчок — целиком", dim=True), None, rot_b, spacing=10))
+            self.boxes_cb,
+            label("колесико мыши — увеличить / уменьшить под курсором · перетащить — сдвинуть · "
+                  "двойной щелчок — целиком", dim=True), None, rot_b, spacing=12))
         ok_b = button("Верно ✓  (Enter)", primary=True, on_click=self.confirm)
         skip_b = button("Пропустить", on_click=self.skip)
         del_b = button("Удалить", on_click=self.delete)
@@ -283,6 +291,10 @@ class TrainingPage(QWidget):
             self.view.set_regions(regions)
         except Exception as e:  # noqa: BLE001
             self.view.set_text(f"Не удалось открыть фото: {e}")
+
+    def _toggle_boxes(self, on: bool):
+        self.show_boxes = on
+        self.view.set_boxes_visible(on)
 
     def rotate_photo(self):
         """Повернуть фото на 90° по часовой; рамки после поворота ставятся заново."""
