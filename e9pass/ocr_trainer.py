@@ -29,7 +29,7 @@ from . import training
 Progress = Callable[[str], None]
 
 UV_VERSION = "0.9.5"
-PADDLE_PKGS = ["paddlepaddle==3.3.1", "paddle2onnx==2.1.0", "onnx"]
+PADDLE_PKGS = ["paddlepaddle==3.3.1", "onnx"]
 PADDLEOCR_COMMIT = "dab3fe35379033fdcb2d0e9572fac0b36c9a9ebf"
 PRETRAINED = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_pretrained_model/"
 
@@ -40,6 +40,7 @@ MODELS = {
         "config": "configs/rec/PP-OCRv6/PP-OCRv6_small_rec.yml",
         "weights": "PP-OCRv6_small_rec_pretrained.pdparams",
         "dict": "ppocr/utils/dict/ppocrv6_dict.txt",
+        "base": "PP-OCRv6_rec_small.onnx",
         "lr": 0.0002,
     },
     training.KOREAN: {
@@ -47,6 +48,7 @@ MODELS = {
         "config": "configs/rec/PP-OCRv5/multi_language/korean_PP-OCRv5_mobile_rec.yml",
         "weights": "korean_PP-OCRv5_mobile_rec_pretrained.pdparams",
         "dict": "ppocr/utils/dict/ppocrv5_korean_dict.txt",
+        "base": "korean_PP-OCRv5_rec_mobile.onnx",
         "lr": 0.0002,
     },
 }
@@ -93,15 +95,51 @@ ml.MultiLoss.forward = loss_forward
 runpy.run_path(script, run_name="__main__")
 '''
 
-# Словарь символов внутрь ONNX-файла — так же, как в моделях RapidOCR (тогда отдельный файл не нужен).
-ADD_META = r'''
-import sys, onnx
-model_path, dict_path = sys.argv[1], sys.argv[2]
-m = onnx.load(model_path)
-chars = open(dict_path, encoding="utf-8").read().splitlines()
-meta = m.metadata_props.add()
-meta.key, meta.value = "character", "\n".join(chars)
-onnx.save(m, model_path)
+# Обученные веса — прямо в готовую ONNX-модель программы. Основа заморожена, поэтому меняются только
+# верхние слои (CTC); их место в ONNX находится по совпадению с исходными весами. paddle2onnx не нужен:
+# его сборка для Windows несовместима с PaddlePaddle («DLL load failed … не найдена указанная процедура»).
+SWAP_WEIGHTS = r'''
+import pickle, sys
+import numpy as np
+import onnx
+from onnx import numpy_helper
+
+base_path, pre_path, trained_path, out_path = sys.argv[1:5]
+HEAD = ("head.ctc_encoder.", "head.ctc_head.")
+pre = pickle.load(open(pre_path, "rb"))
+new = pickle.load(open(trained_path, "rb"))
+m = onnx.load(base_path)
+inits = {i.name: i for i in m.graph.initializer}
+arrays = {n: numpy_helper.to_array(i) for n, i in inits.items()}
+for k, v in pre.items():
+    if k.startswith("backbone.") and isinstance(v, np.ndarray) and k in new:
+        if not np.allclose(np.asarray(new[k]), v, atol=1e-6):
+            sys.exit(f"основа модели изменилась при обучении: {k}")
+used, n = set(), 0
+for k, v in pre.items():
+    if not k.startswith(HEAD) or not isinstance(v, np.ndarray):
+        continue
+    v = np.asarray(v, dtype=np.float32)
+    hits = []
+    for name, a in arrays.items():
+        if name in used:
+            continue
+        if a.shape == v.shape and np.allclose(a, v, atol=1e-6):
+            hits.append((name, False))
+        elif v.ndim == 2 and a.shape == v.T.shape and np.allclose(a, v.T, atol=1e-6):
+            hits.append((name, True))
+    if len(hits) != 1:
+        sys.exit(f"не удалось однозначно найти вес {k} в модели ({len(hits)})")
+    name, transpose = hits[0]
+    w = np.asarray(new[k], dtype=np.float32)
+    w = w.T if transpose else w
+    inits[name].CopyFrom(numpy_helper.from_array(np.ascontiguousarray(w).astype(arrays[name].dtype), name))
+    used.add(name)
+    n += 1
+if not n:
+    sys.exit("в модели не найдено обучаемых весов")
+onnx.save(m, out_path)
+print(f"weights replaced: {n}")
 '''
 
 
@@ -278,7 +316,6 @@ def setup_toolkit(progress: Progress = lambda _m: None, cancel=None):
         if not dst.exists():
             _download(PRETRAINED + m["weights"], dst, progress, m["weights"])
     (tk / "runner.py").write_text(RUNNER, encoding="utf-8")
-    (tk / "add_meta.py").write_text(ADD_META, encoding="utf-8")
     progress("Проверка PaddlePaddle")
     _run([env_python(), "-c", "import paddle; print(paddle.__version__)"], log, cancel=cancel)
     shutil.rmtree(tk / "uv-cache", ignore_errors=True)  # кэш загрузок больше не нужен
@@ -368,14 +405,16 @@ def train_model(key: str, progress: Progress = lambda _m: None, cancel=None) -> 
     _run([env_python(), tk / "runner.py", "tools/train.py", "-c", cfg], log, cwd=paddleocr_dir(),
          on_line=on_line, cancel=cancel)
     progress(f"{title}: сохранение модели")
-    _run([env_python(), "tools/export_model.py", "-c", cfg, "-o", f"Global.pretrained_model={work / 'out' / 'latest'}",
-          f"Global.save_inference_dir={work / 'infer'}"], log, cwd=paddleocr_dir(), cancel=cancel)
-    p2o = env_python().parent / ("paddle2onnx.exe" if _win() else "paddle2onnx")
+    from .ocr.ocr_engine import models_dir
+
+    base = models_dir() / MODELS[key]["base"]
+    if not base.exists():
+        raise TrainError(f"Нет исходной модели {base}")
+    script = work / "swap_weights.py"
+    script.write_text(SWAP_WEIGHTS, encoding="utf-8")
     onnx_path = work / "model.onnx"
-    _run([p2o, "--model_dir", work / "infer", "--model_filename", "inference.json",
-          "--params_filename", "inference.pdiparams", "--save_file", onnx_path, "--opset_version", "14"],
-         log, cancel=cancel)
-    _run([env_python(), tk / "add_meta.py", onnx_path, paddleocr_dir() / MODELS[key]["dict"]], log, cancel=cancel)
+    _run([env_python(), script, base, tk / "weights" / MODELS[key]["weights"], work / "out" / "latest.pdparams",
+          onnx_path], log, cancel=cancel)
     return onnx_path
 
 
