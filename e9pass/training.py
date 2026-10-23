@@ -518,10 +518,11 @@ def card_lines(engine, card: Card):
 def build_dataset(store: TrainingStore, engine=None, out_dir: Optional[Path] = None,
                   progress: Callable[[str], None] = lambda _m: None) -> dict:
     """Вырезает строки из проверенных карт: out_dir/{latin,korean}/{train,val}.txt + images/.
-    Каждая пятая карта (по содержимому фото) — проверочная, в обучение не попадает."""
+    Каждая пятая карта (по содержимому фото) — проверочная, в обучение не попадает.
+    Строки ищет стандартный OCR: тогда набор одинаков при любой подключенной модели и сравнение честное."""
     from .ocr.ocr_engine import OcrEngine
 
-    engine = engine or OcrEngine.get()
+    engine = engine or OcrEngine(trained=False)
     out_dir = Path(out_dir or training_dir() / "dataset")
     if out_dir.exists():
         shutil.rmtree(out_dir)

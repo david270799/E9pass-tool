@@ -150,9 +150,13 @@ class TrainingPage(QWidget):
             self.add_files([Path(f) for f in files])
 
     def add_files(self, files):
-        ids = self.store.add_images(files)
-        skipped = len(files) - len(ids)
+        photos = [f for f in files if Path(f).suffix.lower() in training.IMAGE_EXTENSIONS]
+        ids = self.store.add_images(photos)
+        skipped = len(photos) - len(ids)
         self.state.busy_changed.emit(f"Добавлено фото: {len(ids)}" + (f", повторы пропущены: {skipped}" if skipped else ""))
+        if skipped:
+            QMessageBox.information(self, "Обучение OCR", f"Добавлено фото: {len(ids)}\nПропущено повторов: {skipped} "
+                                    "(эти фото уже есть в учебной базе — разметка у них сохранена)")
         self.refresh_list()
         self.run_ocr()
 

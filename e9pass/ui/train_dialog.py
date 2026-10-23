@@ -122,7 +122,12 @@ class TrainDialog(QDialog):
                     lines.append(f"• {title}: пропущено — {r['skipped']}")
                 else:
                     verdict = "подключена ✓" if r["installed"] else "не подключена (не стала точнее)"
-                    lines.append(f"• {title}: {r['before'] * 100:.0f}% → {r['after'] * 100:.0f}% верно — {verdict}")
+                    lines.append(f"• {title}: {r['before'] * 100:.0f}% → {r['after'] * 100:.0f}% верно — {verdict}"
+                                 f"\n   (обучение: {r['train']} строк, проверка: {r['val']} строк)")
+            small = [r["val"] for r in results.values() if "val" in r and r["val"] < 50]
+            if small:
+                lines.append(f"\nПроверочных строк мало — одна строка ≈ {100 / max(min(small), 1):.0f}%, поэтому "
+                             "проценты заметно меняются от запуска к запуску. С ростом числа карт они станут точнее.")
             QMessageBox.information(self, "Итог обучения", "\n".join(lines))
 
         def failed(err):

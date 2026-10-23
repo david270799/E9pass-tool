@@ -207,7 +207,7 @@ def _score(results) -> float:
     return sum(conf * len(text) for _box, text, conf in results)
 
 
-def rapidocr_params() -> dict:
+def rapidocr_params(trained: bool = True) -> dict:
     from rapidocr import LangRec, ModelType, OCRVersion
 
     params = {"Global.log_level": "error",
@@ -217,7 +217,8 @@ def rapidocr_params() -> dict:
     if all((mdir / f).exists() for f in MODEL_FILES):
         params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
                        "Rec.model_path": str(mdir / REC_MODEL)})
-    _use_trained(params, "korean")
+    if trained:
+        _use_trained(params, "korean")
     return params
 
 
@@ -232,7 +233,7 @@ def _use_trained(params: dict, key: str):
         params["Rec.model_path"] = str(trained)
 
 
-def latin_params() -> dict:
+def latin_params(trained: bool = True) -> dict:
     from rapidocr import ModelType, OCRVersion
 
     params = {"Global.log_level": "error", "Rec.ocr_version": OCRVersion.PPOCRV6, "Rec.model_type": ModelType.SMALL}
@@ -240,7 +241,8 @@ def latin_params() -> dict:
     if all((mdir / f).exists() for f in MODEL_FILES):
         params.update({"Det.model_path": str(mdir / DET_MODEL), "Cls.model_path": str(mdir / CLS_MODEL),
                        "Rec.model_path": str(mdir / LAT_MODEL)})
-    _use_trained(params, "latin")
+    if trained:
+        _use_trained(params, "latin")
     return params
 
 
@@ -259,11 +261,12 @@ class OcrEngine:
     _instance = None
     _lock = threading.Lock()
 
-    def __init__(self):
+    def __init__(self, trained: bool = True):
+        """trained=False — только стандартные модели (учебный набор не должен зависеть от дообученной)."""
         from rapidocr import RapidOCR  # импорт только при создании
 
-        self.reader = RapidOCR(params=rapidocr_params())
-        self.latin = RapidOCR(params=latin_params())
+        self.reader = RapidOCR(params=rapidocr_params(trained))
+        self.latin = RapidOCR(params=latin_params(trained))
         self._run_lock = threading.Lock()
 
     @classmethod
