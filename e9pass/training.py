@@ -184,6 +184,16 @@ class TrainingStore:
         with self.conn() as c:
             c.execute(f"UPDATE cards SET {sets} WHERE id=?", (*args, card_id))
 
+    def save_draft(self, card_id: int, side: str, name="", arc="", country="", address="",
+                   rotation: int = 0, regions: Optional[dict] = None):
+        """Исправления без «Верно»: сохраняются, статус карты не меняется."""
+        import json
+        with self.conn() as c:
+            c.execute("UPDATE cards SET side=?, name=?, arc=?, country=?, address=?, rotation=?, regions=?"
+                      " WHERE id=? AND status IN (?, ?)",
+                      (side, name.strip(), arc.strip(), country.strip(), " ".join(address.split()), rotation % 360,
+                       json.dumps(regions or {}), card_id, READY, DONE))
+
     def skip(self, card_id: int):
         with self.conn() as c:
             c.execute("UPDATE cards SET status=? WHERE id=?", (SKIP, card_id))

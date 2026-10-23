@@ -25,6 +25,7 @@ class TrainingPage(QWidget):
         self.state = state
         self.store = training.TrainingStore()
         self.current = None
+        self.editing = None  # карта, поля которой сейчас на экране (для автосохранения исправлений)
         self.filter = None
         self.ocr_running = False
         self.show_boxes = True  # галочка «Показывать рамки» запоминается между картами
@@ -119,6 +120,7 @@ class TrainingPage(QWidget):
             self.timer.stop()
 
     def _filter_changed(self, b):
+        self.save_draft()
         self.filter = b.property("value")
         self.current = None
         self.refresh_list()
@@ -184,6 +186,8 @@ class TrainingPage(QWidget):
     # ------------------------------------------------------------ разметка
 
     def show_card(self, card):
+        self.save_draft()
+        self.editing = None
         self.current = card
         clear_layout(self.panel_lay)
         if card is None:
@@ -280,6 +284,25 @@ class TrainingPage(QWidget):
         self.panel_lay.addLayout(hbox(del_b, None, skip_b, ok_b))
         self._set_side(card.side if card.side in (training.FRONT, training.BACK, training.OTHER) else training.FRONT)
         (self.f_address if self.side == training.BACK else self.f_name).setFocus()
+        self.editing = card.id
+
+    def save_draft(self):
+        """Исправления на карте не теряются, если уйти с нее без «Верно» (другая карта, фильтр, страница)."""
+        c = self.current
+        if c is None or self.editing != c.id or self.side not in (training.FRONT, training.BACK):
+            return
+        regions = self.view.regions()
+        if self.side == training.FRONT:
+            self.store.save_draft(c.id, training.FRONT, name=self.f_name.text().upper(), arc=self.f_arc.text(),
+                                  country=self.f_country.text().upper(), rotation=self.rotation,
+                                  regions={k: v for k, v in regions.items() if k in training.FIELDS_FRONT})
+        else:
+            self.store.save_draft(c.id, training.BACK, address=self.f_address.text(), rotation=self.rotation,
+                                  regions={k: v for k, v in regions.items() if k in training.FIELDS_BACK})
+
+    def hideEvent(self, e):
+        self.save_draft()
+        super().hideEvent(e)
 
     def _show_photo(self, regions: dict):
         try:
@@ -347,4 +370,5 @@ class TrainingPage(QWidget):
 
     def train(self):
         from .train_dialog import TrainDialog
+        self.save_draft()
         TrainDialog(self.store, self).exec()

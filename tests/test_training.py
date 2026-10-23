@@ -89,3 +89,15 @@ def test_regions_saved_with_label_and_migrated(tmp_path):
     s2 = training.TrainingStore(old)
     s2.add_image(make_photo(tmp_path / "b.jpg", "gray"))
     assert s2.cards()[0].region_map == {}
+
+
+def test_draft_keeps_edits_without_changing_status(tmp_path):
+    store = training.TrainingStore(tmp_path / "t" / "training.sqlite3")
+    a, b = store.add_images([make_photo(tmp_path / "a.jpg"), make_photo(tmp_path / "b.jpg", "gray")])
+    store.set_prediction(a, training.FRONT, name="KARIMOV JASUP")
+    store.save_draft(a, training.FRONT, name="KARIMOV JASUR", regions={"name": [0.1, 0.4, 0.6, 0.55]})
+    c = store.card(a)
+    assert c.status == training.READY and c.name == "KARIMOV JASUR" and "name" in c.region_map
+    assert c.pred_name == "KARIMOV JASUP"                 # что прочитал OCR — остается
+    store.save_draft(b, training.FRONT, name="X")          # карта еще не прочитана OCR — черновик не пишется
+    assert store.card(b).name == "" and store.card(b).status == training.NEW
