@@ -78,6 +78,12 @@ class MainWindow(QMainWindow):
                 nav_lay.addWidget(line)
         self.busy = wrap_label("", dim=True)
         self.folder_label = wrap_label(f"Офлайн-режим\n{config.data_dir()}", dim=True)
+        self.data_btn = button("▤   Данные клиентов", on_click=self.show_client_data)
+        self.data_btn.setObjectName("NavButton")
+        self.data_btn.setToolTip("Отдельное узкое окно поверх всех окон: ФИО, e-mail, телефон, ID, адрес — "
+                                 "нажал на поле, и оно скопировано")
+        nav_lay.addWidget(self.data_btn)
+        self.client_data = None
         self.ext_btn = button("🧩  Расширение Chrome", flat=True, on_click=self.show_extension)
         self.ext_btn.setStyleSheet(f"QPushButton{{color:{theme.MUTED};text-align:left;}}"
                                    f"QPushButton:hover{{color:{theme.ACCENT};}}")
@@ -122,6 +128,21 @@ class MainWindow(QMainWindow):
         self.calendar_timer.start(60_000)
         self.set_sidebar_collapsed(self.settings.value("sidebar_collapsed", False, type=bool))
 
+    def closeEvent(self, e):
+        if self.client_data is not None:  # окно данных и значок закрываются вместе с программой
+            self.client_data.bubble.close()
+            self.client_data.close()
+        super().closeEvent(e)
+
+    def show_client_data(self):
+        from .client_data import ClientDataWindow
+        if self.client_data is None:
+            self.client_data = ClientDataWindow(self.state)
+            self.client_data.setStyleSheet(theme.QSS)
+            g = self.frameGeometry()
+            self.client_data.move(g.right() - self.client_data.width() - 40, g.top() + 80)
+        self.client_data.show_window()
+
     def show_extension(self):
         from .extension_dialog import ExtensionDialog
         ExtensionDialog(getattr(self, "bridge_port", None), self).exec()
@@ -144,6 +165,9 @@ class MainWindow(QMainWindow):
             b.setStyleSheet("text-align:center;padding:10px 0;" if collapsed else "")
         self.collapse_btn.setText("»" if collapsed else "«  Свернуть меню")
         self.ext_btn.setText("🧩" if collapsed else "🧩  Расширение Chrome")
+        self.data_btn.setText("▤" if collapsed else "▤   Данные клиентов")
+        self.data_btn.setToolTip("Данные клиентов" if collapsed else self.data_btn.toolTip())
+        self.data_btn.setStyleSheet("text-align:center;padding:10px 0;" if collapsed else "")
         self.ext_btn.setToolTip("Расширение Chrome" if collapsed else "")
         self.collapse_btn.setToolTip("Развернуть меню" if collapsed else "")
         self.side_lay.setContentsMargins(*((10, 22, 10, 16) if collapsed else (16, 22, 16, 16)))

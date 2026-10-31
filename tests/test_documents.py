@@ -206,3 +206,46 @@ def test_client_zip_is_flat_without_contract_and_scans(env, monkeypatch):
     out = services.export_client_zip(db, cid, tmp)
     names = sorted(zipfile.ZipFile(out).namelist())
     assert names == ["MASTER.pdf", "front.jpg", "nhis-1.pdf"]
+
+
+def test_stage_received_then_progress_then_done(env, tmp_path):
+    db, cid, _ = env
+    assert db.client(cid).stage == "received"                      # архив принят
+    services.set_client_fields(db, cid, full_name="TEST")          # без изменений — этап тот же
+    assert db.client(cid).stage == "received"
+    services.set_client_fields(db, cid, phone="010-1234-5678")     # правка данных — работа идет
+    assert db.client(cid).stage == "progress"
+    services.export_registry([db.client(cid)], tmp_path / "r.xlsx")
+    services.mark_done(db, [cid])
+    assert db.client(cid).stage == "done"
+    src = tmp_path / "doc.pdf"
+    make_pdf(src)
+    services.add_documents(db, cid, [src], engine=NoOcr())         # после экспорта снова изменения
+    assert db.client(cid).stage == "progress"
+
+
+def test_manual_client_received_when_front_dropped(tmp_path, monkeypatch):
+    monkeypatch.setenv("E9PASS_HOME", str(tmp_path / "home"))
+    from PIL import Image
+    db = Database(tmp_path / "db.sqlite3")
+    cid = services.create_manual_client(db, "2026-10")
+    assert db.client(cid).stage == "progress"
+    photo = tmp_path / "front_photo.jpg"
+    Image.new("RGB", (800, 500), "white").save(photo)
+    monkeypatch.setattr(services, "make_id_a4", lambda db_, cid_, path, *a, **k: None)
+    services.add_documents(db, cid, [photo], engine=FakeOcr())
+    assert db.client(cid).stage == "received"                      # лицо ID пришло — клиент принят
+    photo2 = tmp_path / "front_photo2.jpg"
+    Image.new("RGB", (800, 500), "white").save(photo2)
+    services.add_documents(db, cid, [photo2], engine=FakeOcr())
+    assert db.client(cid).stage == "progress"
+
+
+def test_bankbook_is_optional(tmp_path, monkeypatch):
+    monkeypatch.setenv("E9PASS_HOME", str(tmp_path / "home"))
+    db = Database(tmp_path / "db.sqlite3")
+    cid = services.create_manual_client(db, "2026-10")
+    assert not any("통장" in w for w in db.client(cid).warnings)
+    db.update_client(cid, warnings=["нет фото 통장사본", "банк не распознан", "адрес не найден"])
+    services._refresh_status(db, cid)                               # старые записи: банковские замечания снимаются
+    assert db.client(cid).warnings == ["адрес не найден"]

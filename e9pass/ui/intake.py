@@ -12,7 +12,7 @@ from .. import services
 from ..archive import ARCHIVE_EXTENSIONS
 from ..db import BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT
 from . import theme
-from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
+from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, stage_pill, clear_layout, frame, hbox, label, open_path, run_task,
                       thumbnail, vbox, wrap_label)
 
 PHOTO_TYPES = [(BUILTIN_FRONT, "ID лицо"), (BUILTIN_BACK, "ID оборот"), (BUILTIN_BANK, "통장사본"),
@@ -317,7 +317,8 @@ class IntakePage(QWidget):
                      f"{client.nationality or '—'}", muted=True)
         addr = label(f"Адрес: {client.registered_address or 'не распознан'}",
                      muted=bool(client.registered_address), warn=not client.registered_address)
-        head = vbox(hbox(src, name, tag, None, badge(client.status)), info, addr, spacing=4)
+        marks = [badge("review")] if client.warnings else []
+        head = vbox(hbox(src, name, tag, None, *marks, stage_pill(client.stage)), info, addr, spacing=4)
         hw = QWidget()
         hw.setLayout(head)
         head.setContentsMargins(18, 16, 18, 12)

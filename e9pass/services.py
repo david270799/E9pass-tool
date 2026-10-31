@@ -17,7 +17,8 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from . import archive, config, pdf_tools, scan
-from .db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT, Client, Database, DocRule
+from .db import (BUILTIN_A4, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT, STAGE_DONE, STAGE_PROGRESS, STAGE_RECEIVED,
+                 Client, Database, DocRule)
 from .ocr import back as back_ocr
 from .ocr import bank as bank_ocr
 from .ocr import detect
@@ -269,11 +270,9 @@ def _extract_fields(engine: OcrEngine, photos: List[PhotoResult], progress: Prog
     banks = [p for p in photos if p.doc_type == detect.BANK]
     if banks:
         progress("Читаю 통장")
-        bank_name, acc, w = _read_bank(engine, banks[0].path, banks[0].lines or None)
+        bank_name, acc, _w = _read_bank(engine, banks[0].path, banks[0].lines or None)
         fields.update(bank_name=bank_name, account_number=acc)
-        warnings += w
-    else:
-        warnings.append("нет фото 통장사본")
+    # 통장 не обязателен: его отсутствие или нераспознанный счет — не повод для «⚠»
     return fields, warnings
 
 
@@ -295,13 +294,18 @@ def reread_client(db: Database, client_id: int, engine: Optional[OcrEngine] = No
     if fronts:
         make_id_a4(db, client_id, fronts[0].path)
     _refresh_status(db, client_id, warnings)
+    mark_changed(db, client_id)
     return fields
+
+
+BANK_WARNINGS = ("нет фото 통장", "банк", "номер счета")  # 통장 не обязателен — такие предупреждения снимаются
 
 
 def _refresh_status(db: Database, client_id: int, warnings: Optional[List[str]] = None):
     client = db.client(client_id)
     if warnings is None:
         warnings = client.warnings
+    warnings = [w for w in warnings if not w.startswith(BANK_WARNINGS)]
     if any(d.password_status == "locked" for d in db.documents(client_id)):
         if "PDF с паролем" not in warnings:
             warnings = warnings + ["PDF с паролем"]
@@ -310,8 +314,22 @@ def _refresh_status(db: Database, client_id: int, warnings: Optional[List[str]] 
     db.update_client(client_id, warnings=warnings, status="review" if warnings else "ready")
 
 
+def mark_changed(db: Database, client_id: int):
+    """Любое изменение после приемки (документы, правка данных, скан, Master-PDF) — этап «В процессе»."""
+    client = db.client(client_id)
+    if client and client.stage != STAGE_PROGRESS:
+        db.update_client(client_id, stage=STAGE_PROGRESS)
+
+
+def mark_done(db: Database, client_ids: Iterable[int]):
+    """После экспорта (реестр, ZIP) — этап «Готово»."""
+    for cid in client_ids:
+        db.update_client(cid, stage=STAGE_DONE)
+
+
 def set_client_fields(db: Database, client_id: int, **fields):
     """Ручная правка профиля: снимает предупреждения о заполненных полях."""
+    before = db.client(client_id)
     if "full_name" in fields:
         fields["full_name"] = normalize_name(fields["full_name"].upper())
     if fields.get("phone"):
@@ -320,6 +338,8 @@ def set_client_fields(db: Database, client_id: int, **fields):
         fields["email"] = fields["email"].strip().lower()
     db.update_client(client_id, **fields)
     client = db.client(client_id)
+    if any(getattr(before, k, None) != getattr(client, k, None) for k in fields):
+        mark_changed(db, client_id)
     resolved = {
         "full_name": ("ФИО",), "arc_number": ("номер",), "nationality": ("страна",),
         "registered_address": ("адрес",), "bank_name": ("банк",), "account_number": ("номер счета",),
@@ -356,6 +376,7 @@ def save_back_scan(db: Database, client_id: int, back_path: Path, corners=None,
             db.delete_document(d.id)
     db.add_document(client_id, BUILTIN_BACK, png, original_name=png.name, is_processed_scan=1,
                     detected_by=SCAN_MANUAL)
+    mark_changed(db, client_id)
     return png
 
 
@@ -495,6 +516,7 @@ def add_documents(db: Database, client_id: int, paths: Iterable[Path], engine: O
     rules = db.rules()
     engine = engine or OcrEngine.get()
     paths = [Path(p) for p in paths]
+    had_front = bool(db.documents_of_type(client_id, BUILTIN_FRONT))
     ids = []
     for i, path in enumerate(paths, start=1):
         progress(f"{i}/{len(paths)} · копирую {path.name}")
@@ -514,6 +536,12 @@ def add_documents(db: Database, client_id: int, paths: Iterable[Path], engine: O
     if added_types & {BUILTIN_FRONT, BUILTIN_BACK, BUILTIN_BANK}:
         fill_empty_from_photos(db, client_id, engine, progress)
     _refresh_status(db, client_id)
+    if ids:
+        # пустая карточка получила лицо ID — это и есть прием клиента; дальше любые документы — работа
+        if not had_front and BUILTIN_FRONT in added_types and not client.source_archive:
+            db.update_client(client_id, stage=STAGE_RECEIVED)
+        else:
+            mark_changed(db, client_id)
     return ids
 
 
@@ -573,8 +601,8 @@ def create_manual_client(db: Database, period: str) -> int:
 
     folder = _unique(config.period_dir(period) / f"Новый_клиент_{datetime.now():%Y%m%d_%H%M%S}")
     (folder / ORIGINALS).mkdir(parents=True)
-    client_id = db.add_client(period, folder_path=str(folder), source_archive="")
-    _refresh_status(db, client_id, ["нет фото лицевой стороны ID", "нет фото оборота ID", "нет фото 통장사본"])
+    client_id = db.add_client(period, folder_path=str(folder), source_archive="", stage=STAGE_PROGRESS)
+    _refresh_status(db, client_id, ["нет фото лицевой стороны ID", "нет фото оборота ID"])
     return client_id
 
 
@@ -640,6 +668,7 @@ def unlock_with_password(db: Database, doc_id: int, client_id: int, password: st
             detected = reason
         db.update_document(doc_id, password_status="unlocked", detected_by=f"{detected} · пароль введен вручную")
         _refresh_status(db, client_id)
+        mark_changed(db, client_id)
     return ok
 
 
@@ -712,6 +741,7 @@ def build_master(db: Database, client_id: int, progress: Progress = _noop) -> Ma
     progress("Склеиваю PDF")
     pdf_tools.merge(files, out)
     db.update_client(client_id, master_pdf=str(out))
+    mark_changed(db, client_id)
     return MasterResult(out, included, skipped, locked, unknown)
 
 
@@ -852,6 +882,7 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
                 db.update_client(client.id, **updates)
                 if "registered_address" in updates:
                     set_client_fields(db, client.id)  # снять предупреждение «адрес не найден»
+                mark_changed(db, client.id)
                 res.updated.append(f"{client.full_name}: {', '.join(notes)}")
     wb.close()
     return res

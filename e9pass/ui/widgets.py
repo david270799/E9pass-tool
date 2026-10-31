@@ -163,6 +163,46 @@ def badge(status: str, text: Optional[str] = None) -> QLabel:
     return w
 
 
+# Этапы клиента: свой цвет у каждого (порядок — как идет работа)
+STAGE_TEXT = {"received": "Получен", "progress": "В процессе", "done": "Готово"}
+STAGE_COLOR = {"received": "#F5C518", "progress": "#4DA3FF", "done": "#3DDC84"}
+STAGE_HINT = {"received": "архив принят, карточка создана",
+              "progress": "идет работа: добавлены документы или изменены данные",
+              "done": "экспортирован (реестр или ZIP)"}
+
+
+def _stage_css(stage: str) -> str:
+    return (f"background:{STAGE_COLOR.get(stage, theme.DIM)};color:#121212;border:none;border-radius:10px;"
+            "padding:2px 10px;font-size:12px;font-weight:800;")
+
+
+def stage_pill(stage: str) -> QLabel:
+    w = QLabel(STAGE_TEXT.get(stage, stage))
+    w.setStyleSheet(_stage_css(stage))
+    w.setToolTip(STAGE_HINT.get(stage, ""))
+    w.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+    return w
+
+
+class StageButton(QPushButton):
+    """Плашка этапа: меняется сама, а по нажатию — меню, чтобы поставить этап вручную."""
+
+    def __init__(self, stage: str, on_change: Callable[[str], None]):
+        super().__init__(STAGE_TEXT.get(stage, stage) + "  ▾")
+        from PySide6.QtWidgets import QMenu
+
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(f"QPushButton{{{_stage_css(stage)}min-height:0;}}")
+        self.setToolTip(f"{STAGE_HINT.get(stage, '')}\nНажмите, чтобы сменить вручную")
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        menu = QMenu(self)
+        for key, text in STAGE_TEXT.items():
+            act = menu.addAction(f"●  {text}" + ("   ✓" if key == stage else ""))
+            act.triggered.connect(lambda _=False, k=key: on_change(k))
+        self.setMenu(menu)
+        self.setStyleSheet(self.styleSheet() + "QPushButton::menu-indicator{width:0;}")
+
+
 def chip(text: str, state: str = "ok") -> QLabel:
     w = QLabel(text)
     if state == "ok":

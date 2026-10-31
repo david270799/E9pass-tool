@@ -10,8 +10,8 @@ from .. import services
 from ..archive import ARCHIVE_EXTENSIONS
 from ..db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT
 from . import theme
-from .widgets import (MONTHS_RU, DropZone, FlowLayout, badge, button, chip, clear_layout, frame, hbox, label,
-                      run_task, stat_tile, vbox)
+from .widgets import (MONTHS_RU, STAGE_COLOR, DropZone, FlowLayout, StageButton, button, chip, clear_layout, frame,
+                      hbox, label, run_task, stat_tile, vbox)
 
 
 def local_date(utc_text: str, with_time: bool = False) -> str:
@@ -49,7 +49,7 @@ class ClientCard(QFrame):
         warn_icon.setCursor(Qt.WhatsThisCursor)
         warn_icon.setToolTip("Проверьте:\n• " + "\n• ".join(client.warnings) if client.warnings else "")
         warn_icon.setVisible(bool(client.warnings))
-        top = hbox(self.check, name, None, warn_icon, badge(client.status), rm, spacing=8)
+        top = hbox(self.check, name, None, warn_icon, StageButton(client.stage, self.set_stage), rm, spacing=8)
         arc = label(client.arc_number or "—", mono=True)
         arc.setMinimumWidth(arc.sizeHint().width())  # номер ARC всегда целиком
         # гражданство и дату рождения на карточке не показываем — дата видна по номеру ARC
@@ -64,6 +64,8 @@ class ClientCard(QFrame):
         types = {d.doc_type for d in docs}
         chips = FlowLayout(6)
         for code, text in ((BUILTIN_FRONT, "ID лицо"), (BUILTIN_BACK, "ID оборот"), (BUILTIN_BANK, "통장")):
+            if code == BUILTIN_BANK and code not in types:
+                text = "통장 · не обязателен"
             ch = chip(text, "ok" if code in types else "missing")
             ch.setToolTip(f"{text}: {'есть' if code in types else 'нет — не было в архиве'}")
             chips.addWidget(ch)
@@ -90,6 +92,10 @@ class ClientCard(QFrame):
 
     def mouseReleaseEvent(self, e):
         self.state.open_client.emit(self.client_id)
+
+    def set_stage(self, stage):
+        self.state.db.update_client(self.client_id, stage=stage)
+        self.state.data_changed.emit()
 
     def delete(self):
         from .client import confirm_delete_client
@@ -122,8 +128,10 @@ class DashboardPage(QWidget):
         self.search.setPlaceholderText("Поиск по ФИО или ARC")
         self.search.setFixedWidth(240)
         self.search.textChanged.connect(self.refresh)
-        export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
-        export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка)")
+        self.export_b = export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
+        export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка).\n"
+                            "Только отмеченные галочкой клиенты; если не отмечен никто — все клиенты месяца.\n"
+                            "После экспорта у клиентов этап «Готово».")
         new_b = button("＋ Новый клиент", on_click=self.new_client)
         new_b.setToolTip("Карточка без архива: потом перетащите в нее фото лица и оборота ID и 통장 — "
                          "программа распознает их как при приемке архива")
@@ -135,13 +143,15 @@ class DashboardPage(QWidget):
                         ARCHIVE_EXTENSIONS, "Архивы (*.zip *.rar)")
         drop.files_dropped.connect(self.state.archives_dropped.emit)
         self.t_clients = stat_tile("0", "клиентов в периоде")
-        self.t_review = stat_tile("0", "нужно проверить", accent=True)
-        self.t_master = stat_tile("0", "Master-PDF собрано")
-        self.t_printed = stat_tile("0", "напечатано")
+        self.t_received = stat_tile("0", "получено")
+        self.t_progress = stat_tile("0", "в процессе")
+        self.t_done = stat_tile("0", "готово")
+        for t, stage in ((self.t_received, "received"), (self.t_progress, "progress"), (self.t_done, "done")):
+            t.value_label.setStyleSheet(f"font-size:28px;font-weight:800;color:{STAGE_COLOR[stage]};")
         tiles = QGridLayout()
         tiles.setSpacing(14)
         tiles.addWidget(drop, 0, 0)
-        for i, t in enumerate((self.t_clients, self.t_review, self.t_master, self.t_printed), start=1):
+        for i, t in enumerate((self.t_clients, self.t_received, self.t_progress, self.t_done), start=1):
             tiles.addWidget(t, 0, i)
         tiles.setColumnStretch(0, 3)
         for i in range(1, 5):
@@ -163,7 +173,7 @@ class DashboardPage(QWidget):
         self.filter_group = QButtonGroup(self)
         self.filter_buttons = {}
         filters = hbox(spacing=8)
-        for key in ("all", "review", "ready"):
+        for key in ("all", "received", "progress", "done", "warn"):
             b = button("", chip=True)
             b.setCheckable(True)
             b.clicked.connect(lambda _=False, k=key: self._set_filter(k))
@@ -181,7 +191,7 @@ class DashboardPage(QWidget):
         self.btn_send.setToolTip("Сохранить отмеченных клиентов в файл .e9pay для другого сотрудника")
         self.btn_receive = button("Принять клиентов…", chip=True, on_click=self.receive_clients)
         self.btn_receive.setToolTip("Открыть файл .e9pay от коллеги (или перетащите его в окно)")
-        for wdg in (self.sel_label, self.btn_select_all, self.btn_clear, self.btn_send, self.btn_receive):
+        for wdg in (self.sel_label, self.btn_select_all, self.btn_clear):
             filters.addWidget(wdg)
 
         self.grid = QGridLayout()
@@ -197,8 +207,8 @@ class DashboardPage(QWidget):
         self.empty.setAlignment(Qt.AlignCenter)
 
         zip_all = button("Экспорт в ZIP (все клиенты)", on_click=self.export_zip_all)
-        footer = hbox(label("Реестр: №, ФИО (заглавными и строчными), Номер ARC, Дата рождения, "
-                            "Гражданство, Адрес регистрации — без банковских данных", dim=True), None, zip_all)
+        # передача коллеге — внизу: строка фильтров с этапами иначе не помещается
+        footer = hbox(self.btn_send, self.btn_receive, None, zip_all)
 
         root = vbox(hbox(switcher, self.month_label, None, self.search, new_b, import_b, export_b, spacing=14),
                     tiles, self.import_bar, filters, self.empty, scroll, footer,
@@ -219,6 +229,7 @@ class DashboardPage(QWidget):
         self.selected &= ids
         n = len(self.selected)
         self.sel_label.setText(f"Отмечено: {n}" if n else "")
+        self.export_b.setText(f"Экспорт реестра ({n} отмечено)" if n else "Экспорт реестра")
         self.btn_clear.setVisible(bool(n))
         self.btn_send.setEnabled(bool(n))
         self.btn_send.setText(f"Передать клиентов ({n})…" if n else "Передать клиентов…")
@@ -264,16 +275,17 @@ class DashboardPage(QWidget):
         self.period_label.setText(p)
         db = self.state.db
         clients = db.clients(p)
-        review = [c for c in clients if c.status == "review"]
-        ready = [c for c in clients if c.status == "ready"]
+        groups = {"all": clients, "warn": [c for c in clients if c.warnings]}
+        for stage in ("received", "progress", "done"):
+            groups[stage] = [c for c in clients if c.stage == stage]
         self.t_clients.value_label.setText(str(len(clients)))
-        self.t_review.value_label.setText(str(len(review)))
-        self.t_master.value_label.setText(str(sum(1 for c in clients if c.master_pdf)))
-        self.t_printed.value_label.setText(str(sum(1 for c in clients if c.printed)))
-        self.filter_buttons["all"].setText(f"Все · {len(clients)}")
-        self.filter_buttons["review"].setText(f"Проверить · {len(review)}")
-        self.filter_buttons["ready"].setText(f"Готовы · {len(ready)}")
-        shown = {"all": clients, "review": review, "ready": ready}[self.filter]
+        self.t_received.value_label.setText(str(len(groups["received"])))
+        self.t_progress.value_label.setText(str(len(groups["progress"])))
+        self.t_done.value_label.setText(str(len(groups["done"])))
+        for key, text in (("all", "Все"), ("received", "Получен"), ("progress", "В процессе"), ("done", "Готово"),
+                          ("warn", "⚠ Замечания")):
+            self.filter_buttons[key].setText(f"{text} · {len(groups[key])}")
+        shown = groups.get(self.filter, clients)
         q = self.search.text().strip().lower()
         if q:
             shown = [c for c in shown if q in c.full_name.lower() or q in c.arc_number]
@@ -291,6 +303,8 @@ class DashboardPage(QWidget):
 
     def export_registry(self):
         clients = self.state.db.clients(self.state.period)
+        if self.selected:  # только отмеченные галочкой
+            clients = [c for c in clients if c.id in self.selected]
         if not clients:
             QMessageBox.information(self, "Нет данных", "В этом месяце нет клиентов.")
             return
@@ -303,7 +317,10 @@ class DashboardPage(QWidget):
         except PermissionError:
             QMessageBox.warning(self, "Ошибка", "Файл открыт в Excel. Закройте его и повторите.")
             return
-        QMessageBox.information(self, "Готово", f"Реестр сохранен:\n{path}")
+        services.mark_done(self.state.db, [c.id for c in clients])
+        self.state.data_changed.emit()
+        QMessageBox.information(self, "Готово", f"Реестр сохранен:\n{path}\n\nКлиентов в реестре: {len(clients)} "
+                                "— у них этап «Готово».")
 
     def new_client(self):
         cid = services.create_manual_client(self.state.db, self.state.period)
@@ -340,6 +357,7 @@ class DashboardPage(QWidget):
             for i, c in enumerate(clients, start=1):
                 progress(f"ZIP {i}/{len(clients)}: {c.full_name}")
                 out.append(services.export_client_zip(db, c.id, Path(folder)))
+                services.mark_done(db, [c.id])
             return out
 
         self.state.busy_changed.emit("Экспорт ZIP…")

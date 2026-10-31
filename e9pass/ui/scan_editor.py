@@ -300,4 +300,5 @@ class ScanEditor(QDialog):
             self.result_path = services.save_back_scan(db, self.client_id, self.doc.path, corners, self._filter(),
                                                        self.strength.value(), rotate=self.rotation)
         db.update_client(self.client_id, master_pdf="")  # Master-PDF нужно пересобрать
+        services.mark_changed(db, self.client_id)
         self.accept()

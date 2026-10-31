@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QFileDialog, QFrame, QGridLayout, QLabel, QLineEd
 from .. import pdf_tools, services
 from ..db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_FRONT
 from . import theme
-from .widgets import (BusyBar, DropZone, NoWheelComboBox, badge, button, clear_layout, frame, hbox, label, open_path, run_task,
+from .widgets import (BusyBar, DropZone, NoWheelComboBox, StageButton, button, clear_layout, frame, hbox, label, open_path, run_task,
                       thumbnail, type_tag, vbox, wrap_label)
 
 DOC_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".heic", ".bmp", ".tif", ".tiff", ".webp"}
@@ -96,7 +96,7 @@ class ClientPage(QWidget):
         docs = db.documents(c.id)
         self.name.setText(c.full_name or "(без имени)")
         clear_layout(self.badge_host)
-        self.badge_host.addWidget(badge(c.status))
+        self.badge_host.addWidget(StageButton(c.stage, self.set_stage))
         self.crumb.setText(f"/ {c.batch_period}")
         self._render_profile(c, docs)
         self._render_docs(c, docs)
@@ -331,9 +331,14 @@ class ClientPage(QWidget):
         self.state.data_changed.emit()
         self.state.busy_changed.emit("Сохранено")
 
+    def set_stage(self, stage):
+        self.state.db.update_client(self.client_id, stage=stage)
+        self.state.data_changed.emit()
+
     def change_type(self, doc_id, code):
         self.state.db.update_document(doc_id, doc_type=code, detected_by="выбрано вручную")
         services._refresh_status(self.state.db, self.client_id)
+        services.mark_changed(self.state.db, self.client_id)
         self.state.data_changed.emit()
 
     def delete_doc(self, doc):
@@ -341,6 +346,7 @@ class ClientPage(QWidget):
                                 "Файл останется в папке клиента.") == QMessageBox.Yes:
             self.state.db.delete_document(doc.id)
             services._refresh_status(self.state.db, self.client_id)
+            services.mark_changed(self.state.db, self.client_id)
             self.state.data_changed.emit()
 
     def delete_client(self):
@@ -452,6 +458,7 @@ class ClientPage(QWidget):
         if not folder:
             return
         out = services.export_client_zip(self.state.db, self.client_id, Path(folder))
+        services.mark_done(self.state.db, [self.client_id])
         self.state.data_changed.emit()
         QMessageBox.information(self, "Готово", f"Архив сохранен:\n{out}")
 

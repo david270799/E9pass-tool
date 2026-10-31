@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS clients (
     printed INTEGER DEFAULT 0,
     phone TEXT DEFAULT '',
     email TEXT DEFAULT '',
+    stage TEXT DEFAULT 'received',       -- received / progress / done — этап работы с клиентом
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_clients_period ON clients(batch_period);
@@ -85,7 +86,11 @@ DEFAULT_RULES = DEFAULT_RULES + NEW_RULES_V2 + [
 
 CLIENT_FIELDS = ("full_name", "arc_number", "birth_date", "nationality", "registered_address",
                  "bank_name", "account_number", "folder_path", "status", "source_archive",
-                 "master_pdf", "printed", "phone", "email")
+                 "master_pdf", "printed", "phone", "email", "stage")
+
+# Этапы работы с клиентом: архив принят → идет работа (любые изменения) → экспортирован.
+STAGE_RECEIVED, STAGE_PROGRESS, STAGE_DONE = "received", "progress", "done"
+STAGES = (STAGE_RECEIVED, STAGE_PROGRESS, STAGE_DONE)
 
 
 @dataclass
@@ -108,6 +113,7 @@ class Client:
     created_at: str = ""
     phone: str = ""
     email: str = ""
+    stage: str = STAGE_RECEIVED
 
     @property
     def folder(self) -> Path:
@@ -154,6 +160,8 @@ class Database:
             for col in ("phone", "email"):
                 if col not in cols:
                     c.execute(f"ALTER TABLE clients ADD COLUMN {col} TEXT DEFAULT ''")
+            if "stage" not in cols:
+                c.execute(f"ALTER TABLE clients ADD COLUMN stage TEXT DEFAULT '{STAGE_RECEIVED}'")
             if not c.execute("SELECT 1 FROM doc_rules LIMIT 1").fetchone():
                 c.executemany(
                     "INSERT INTO doc_rules(code, doc_name, filename_patterns, ocr_keywords, sort_order,"
