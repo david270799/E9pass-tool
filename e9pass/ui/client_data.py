@@ -2,13 +2,13 @@
 
 import re
 
-from PySide6.QtCore import QPoint, QSettings, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QGuiApplication, QPainter
-from PySide6.QtWidgets import (QCheckBox, QFrame, QLabel, QLineEdit, QListWidget, QListWidgetItem, QSizePolicy,
+from PySide6.QtWidgets import (QCheckBox, QFrame, QLabel, QLineEdit, QListWidget, QListWidgetItem, QScrollArea,
                                QStackedWidget, QWidget)
 
 from . import theme
-from .widgets import STAGE_COLOR, button, clear_layout, hbox, label, stage_pill, vbox, wrap_label
+from .widgets import STAGE_COLOR, breakable, button, clear_layout, hbox, label, stage_pill, vbox, wrap_label
 
 # Номер и цвет в уголке каждого поля — чтобы различать их с одного взгляда (и копировать клавишей 1–8)
 FIELD_COLORS = ["#F5C518", "#FF9F1C", "#4DA3FF", "#3DDC84", "#2EC4B6", "#B57BFF", "#FF6B9A", "#FF7A45"]
@@ -28,6 +28,23 @@ def split_arc(arc: str):
     return (digits[:6], digits[6:]) if len(digits) == 13 else ("", "")
 
 
+class FadeLabel(QLabel):
+    """Текст в одну строку: если не помещается — плавно уходит в тень у правого края (без «…» и переноса)."""
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.fontMetrics().horizontalAdvance(self.text()) <= self.width():
+            return
+        from PySide6.QtGui import QLinearGradient
+        p = QPainter(self)
+        w = min(36, self.width())
+        g = QLinearGradient(self.width() - w, 0, self.width(), 0)
+        g.setColorAt(0, QColor(18, 18, 18, 0))
+        g.setColorAt(1, QColor(18, 18, 18, 255))
+        p.fillRect(self.width() - w, 0, w, self.height(), g)
+        p.end()
+
+
 class CopyField(QFrame):
     """Поле-кнопка: номер с цветом в уголке, значение крупно; нажатие копирует значение."""
 
@@ -45,7 +62,7 @@ class CopyField(QFrame):
         self.done = label("✓" if compact else "✓ скопировано")
         self.done.setStyleSheet("color:#3DDC84;font-size:11.5px;font-weight:700;")
         self.done.hide()
-        self.text = QLabel(value or "—")
+        self.text = QLabel(breakable(value) if value else "—")
         self.text.setWordWrap(True)
         self.text.setAlignment(Qt.AlignCenter if center else Qt.AlignLeft | Qt.AlignVCenter)
         self.text.setStyleSheet("font-size:15px;font-weight:700;" + ("font-family:Consolas,monospace;font-size:16px;"
@@ -156,6 +173,9 @@ class ClientDataWindow(QWidget):
                                 "QListWidget::item{border-bottom:1px solid rgba(255,255,255,0.08);}"
                                 "QListWidget::item:hover{background:rgba(255,255,255,0.06);}"
                                 "QListWidget::item:selected{background:rgba(255,255,255,0.10);}")
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.viewport().installEventFilter(self)  # ширина изменилась — пересчитать высоту строк
+        self.list.setVerticalScrollMode(QListWidget.ScrollPerPixel)
         self.list.itemClicked.connect(lambda it: self.open_client(it.data(Qt.UserRole)))
         self.list.itemActivated.connect(lambda it: self.open_client(it.data(Qt.UserRole)))
         list_page = QWidget()
@@ -171,12 +191,22 @@ class ClientDataWindow(QWidget):
         self.name_label.setWordWrap(True)
         self.stage_host = hbox()
         self.fields_lay = vbox(spacing=7)
+        fields_host = QWidget()
+        fields_host.setLayout(vbox(self.fields_lay, None, spacing=0, margins=(0, 0, 2, 0)))
+        scroll = QScrollArea()  # длинное ФИО / адрес или низкое окно — поля прокручиваются, а не обрезаются
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea{background:transparent;}")
+        scroll.viewport().setAutoFillBackground(False)
+        fields_host.setAutoFillBackground(False)
+        scroll.setWidget(fields_host)
         detail_page = QWidget()
         detail_page.setLayout(vbox(hbox(back, None, *self._window_buttons(), spacing=8),
                                    hbox(self.name_label, None, self.stage_host, spacing=8),
                                    wrap_label("Нажмите на поле — оно скопируется. Клавиши 1–8 — то же самое.",
                                               dim=True),
-                                   self.fields_lay, None, spacing=8, margins=(12, 10, 12, 10)))
+                                   scroll, spacing=8, margins=(12, 10, 12, 10)))
 
         self.stack = QStackedWidget()
         self.stack.addWidget(list_page)
@@ -264,16 +294,36 @@ class ClientDataWindow(QWidget):
             it = QListWidgetItem()
             it.setData(Qt.UserRole, c.id)
             row = QWidget()
-            name = label(c.full_name or "(без имени)")
+            name = FadeLabel(c.full_name or "(без имени)")
             name.setStyleSheet("font-weight:600;")
+            name.setMinimumWidth(10)
+            name.setToolTip(c.full_name)
             arc = label(c.arc_number or "—", dim=True)
             dot = QLabel("●")
             dot.setStyleSheet(f"color:{STAGE_COLOR.get(c.stage, theme.DIM)};font-size:14px;")
-            row.setLayout(hbox(vbox(name, arc, spacing=1), None, dot, spacing=8, margins=(6, 7, 6, 7)))
+            row.setLayout(hbox(vbox(name, arc, spacing=4), dot, spacing=8, margins=(6, 9, 6, 9)))
+            row.layout().setStretch(0, 1)
             row.setAttribute(Qt.WA_TransparentForMouseEvents)
-            it.setSizeHint(row.sizeHint())
             self.list.addItem(it)
             self.list.setItemWidget(it, row)
+        self._fit_rows()
+
+    def _fit_rows(self):
+        """Строка — во всю ширину окна (точка этапа всегда видна), высота — по тексту."""
+        width = self.list.viewport().width()
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            row = self.list.itemWidget(it)
+            if row is not None:
+                row.setFixedWidth(width)
+                for w in row.findChildren(QLabel):
+                    w.ensurePolished()  # шрифт из стиля — до измерения, иначе высота занижена
+                it.setSizeHint(QSize(width, row.sizeHint().height() + 2))
+
+    def eventFilter(self, obj, e):
+        if obj is self.list.viewport() and e.type() == QEvent.Resize:
+            QTimer.singleShot(0, self._fit_rows)
+        return super().eventFilter(obj, e)
 
     def show_list(self):
         self.stack.setCurrentIndex(0)

@@ -17,6 +17,20 @@ MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Ма
 STATUS_LABELS = {"ready": "Готов", "review": "Проверить", "new": "Новый", "importing": "Импорт…"}
 
 
+def breakable(text: str) -> str:
+    """Длинный e-mail без пробелов: разрешить перенос перед «@» и после . _ - в имени (пробел нулевой ширины),
+    чтобы адрес не обрезался; домен (gmail.com) не разрывается."""
+    out = []
+    for word in text.split(" "):
+        local, at, domain = word.partition("@")
+        if at:
+            for ch in "._-":
+                local = local.replace(ch, ch + "\u200b")
+            word = local + "\u200b@" + domain
+        out.append(word)
+    return " ".join(out)
+
+
 def label(text: str = "", **props) -> QLabel:
     w = QLabel(text)
     for k, v in props.items():

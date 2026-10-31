@@ -51,6 +51,8 @@ class PrintPage(QWidget):
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setShowGrid(False)
+        self.table.setWordWrap(True)
+        self.table.setTextElideMode(Qt.ElideNone)
         h = self.table.horizontalHeader()
         h.setSectionResizeMode(1, QHeaderView.Stretch)
         for col, w in ((0, 40), (2, 140), (3, 100)):
@@ -133,6 +135,7 @@ class PrintPage(QWidget):
             self.table.setItem(row, 2, doc_item)
             self.table.setItem(row, 3, id_item)
         self.table.blockSignals(False)
+        self.table.resizeRowsToContents()
         self._update_plan()
 
     def _item_changed(self, item):

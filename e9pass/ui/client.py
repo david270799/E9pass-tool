@@ -24,6 +24,8 @@ class ClientPage(QWidget):
         self.inputs = {}
 
         self.name = label("", h1=True)
+        self.name.setWordWrap(True)
+        self.name.setMinimumWidth(10)
         self.badge_host = hbox()
         self.crumb = label("", muted=True)
         back = button("←  Назад", on_click=lambda: self.state.navigate.emit("dashboard"))
