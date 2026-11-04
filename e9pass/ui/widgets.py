@@ -350,7 +350,9 @@ class DropZone(QFrame):
         t.setStyleSheet("font-weight:700;font-size:15px;")
         s = label(subtitle, dim=True)
         s.setWordWrap(True)
-        self.setLayout(hbox(icon, vbox(t, s, spacing=2), None, spacing=14, margins=(16, 12, 16, 12)))
+        lay = hbox(icon, vbox(t, s, spacing=2), spacing=14, margins=(16, 12, 16, 12))
+        lay.setStretch(1, 1)  # подпись во всю ширину: переносится, только если зона узкая
+        self.setLayout(lay)
         self.setMinimumHeight(72)
 
     def _accepts(self, urls) -> List[Path]:

@@ -77,8 +77,9 @@ class TrainingPage(QWidget):
         body.addWidget(self.panel, 0, 1)
         body.setColumnStretch(1, 1)
         self.stats.setWordWrap(True)
-        self.setLayout(vbox(hbox(vbox(title, self.stats, spacing=2), None, clients_b, add_b, self.train_b, spacing=12),
-                            intro, body,
+        head = hbox(vbox(title, self.stats, spacing=2), clients_b, add_b, self.train_b, spacing=12)
+        head.setStretch(0, 1)  # счетчики во всю ширину, переносятся только при узком окне
+        self.setLayout(vbox(head, intro, body,
                             spacing=12, margins=(32, 24, 32, 20)))
         self.timer = QTimer(self)  # обновление списка, пока идет OCR новых карт
         self.timer.setInterval(1500)

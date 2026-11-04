@@ -10,6 +10,7 @@ from .. import config
 from ..db import Database
 from . import theme
 from .client import ClientPage
+from .contracts_page import ContractsPage
 from .dashboard import DashboardPage
 from .doctypes import DocTypesPage
 from .intake import IntakePage
@@ -59,7 +60,8 @@ class MainWindow(QMainWindow):
         # (ключ, текст, короткая подпись для свернутого меню)
         items = [("dashboard", "1   Импорт и реестр", "1"), ("intake", "      Приемка архивов", "⤓"),
                  ("client", "2   Документы клиента", "2"), ("print", "3   Печать отчетности", "3"),
-                 ("doctypes", "☰   Типы документов", "☰"), ("training", "◎   Обучение OCR", "◎")]
+                 ("doctypes", "☰   Типы документов", "☰"), ("training", "◎   Обучение OCR", "◎"),
+                 ("contracts", "▦   Договоры → Excel", "▦")]
         self.nav_texts = {}
         nav_lay = vbox(spacing=4)
         for key, text, short in items:
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
             "doctypes": DocTypesPage(self.state),
             "print": PrintPage(self.state),
             "training": TrainingPage(self.state),
+            "contracts": ContractsPage(self.state),
         }
         self.pages["intake"] = IntakePage(self.state, on_status=self.pages["dashboard"].set_import_status)
         for p in self.pages.values():
@@ -182,6 +185,10 @@ class MainWindow(QMainWindow):
             return (f"Отпустите, чтобы загрузить архивы в {period}",
                     lambda f: f.suffix.lower() in ARCHIVE_EXTENSIONS | {".e9pay"},
                     self._dropped_on_dashboard)
+        if key == "contracts":
+            from .. import contracts
+            return ("Отпустите, чтобы прочитать договоры",
+                    lambda f: f.suffix.lower() in contracts.CONTRACT_EXTENSIONS, self.pages["contracts"].add_files)
         if key == "training":
             from .. import training
             return ("Отпустите, чтобы добавить фото карт в учебную базу",
