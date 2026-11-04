@@ -638,6 +638,49 @@ def recheck_all_unknown(db: Database) -> int:
     return found
 
 
+@dataclass
+class MoveResult:
+    moved: List[str] = field(default_factory=list)
+    failed: List[str] = field(default_factory=list)     # «ФИО: причина»
+
+
+def _moved_path(path: str, old: Path, new: Path) -> str:
+    """Путь файла клиента после переноса его папки (файлы вне папки не трогаем)."""
+    if not path:
+        return path
+    try:
+        return str(new / Path(path).relative_to(old))
+    except ValueError:
+        return path
+
+
+def move_clients(db: Database, client_ids: Iterable[int], period: str) -> MoveResult:
+    """Перенос клиентов в другой месяц вместе с папкой: документы, сканы и Master-PDF переезжают,
+    этап и отметки остаются как были. Клиент, чью папку не удалось переместить, остается на месте."""
+    res = MoveResult()
+    for cid in client_ids:
+        client = db.client(cid)
+        if client is None or client.batch_period == period:
+            continue
+        name = client.full_name or "без имени"
+        old = client.folder
+        new = old
+        if client.folder_path and old.exists():
+            new = _unique(config.period_dir(period) / old.name)
+            try:
+                shutil.move(str(old), str(new))
+            except OSError as e:
+                res.failed.append(f"{name}: папка занята — закройте открытые файлы клиента ({e.strerror or e})")
+                continue
+        for doc in db.documents(cid):
+            fixed = _moved_path(doc.file_path, old, new)
+            if fixed != doc.file_path:
+                db.update_document(doc.id, file_path=fixed)
+        db.move_client(cid, period, str(new) if client.folder_path else "", _moved_path(client.master_pdf, old, new))
+        res.moved.append(name)
+    return res
+
+
 def delete_client_everything(db: Database, client_id: int):
     """Удаляет клиента из базы и его папку со всеми файлами."""
     client = db.client(client_id)

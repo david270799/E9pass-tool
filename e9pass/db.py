@@ -261,6 +261,12 @@ class Database:
                 (period, json.dumps(warnings, ensure_ascii=False), *[fields[k] for k in keys]))
             return cur.lastrowid
 
+    def move_client(self, client_id: int, period: str, folder_path: str, master_pdf: str):
+        """Перенос клиента в другой месяц: период и пути (папка уже перемещена)."""
+        with self.conn() as c:
+            c.execute("UPDATE clients SET batch_period=?, folder_path=?, master_pdf=? WHERE id=?",
+                      (period, folder_path, master_pdf, client_id))
+
     def update_client(self, client_id: int, **fields):
         sets, values = [], []
         for k, v in fields.items():

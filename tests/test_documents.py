@@ -1,5 +1,7 @@
 """Догрузка документов: файл без расширения, пароль из даты рождения, повторное определение типа."""
 
+from pathlib import Path
+
 import pikepdf
 import pymupdf
 import pytest
@@ -249,3 +251,22 @@ def test_bankbook_is_optional(tmp_path, monkeypatch):
     db.update_client(cid, warnings=["нет фото 통장사본", "банк не распознан", "адрес не найден"])
     services._refresh_status(db, cid)                               # старые записи: банковские замечания снимаются
     assert db.client(cid).warnings == ["адрес не найден"]
+
+
+def test_move_clients_to_another_month(env, tmp_path):
+    db, cid, _ = env
+    src = tmp_path / "doc.pdf"
+    make_pdf(src)
+    services.add_documents(db, cid, [src], engine=NoOcr())
+    old = db.client(cid)
+    master = old.folder / "MASTER_TEST_2026-08.pdf"
+    master.write_bytes(b"%PDF")
+    db.update_client(cid, master_pdf=str(master), stage="progress")
+    res = services.move_clients(db, [cid], "2026-09")
+    c = db.client(cid)
+    assert res.moved == ["TEST"] and not res.failed
+    assert c.batch_period == "2026-09" and db.clients("2026-08") == [] and c.stage == "progress"
+    assert not old.folder.exists() and c.folder.exists() and c.folder.parent.name == "2026-09"
+    assert all(d.path.exists() and c.folder in d.path.parents for d in db.documents(cid))
+    assert c.master_pdf == str(c.folder / master.name) and Path(c.master_pdf).exists()
+    assert services.move_clients(db, [cid], "2026-09").moved == []      # уже в этом месяце

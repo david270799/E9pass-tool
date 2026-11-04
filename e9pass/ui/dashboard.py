@@ -11,7 +11,7 @@ from ..archive import ARCHIVE_EXTENSIONS
 from ..db import BUILTIN_A4, BUILTIN_BACK, BUILTIN_BANK, BUILTIN_FRONT
 from . import theme
 from .widgets import (MONTHS_RU, STAGE_COLOR, DropZone, FlowLayout, StageButton, button, chip, clear_layout, frame,
-                      hbox, label, run_task, stat_tile, vbox)
+                      hbox, label, run_task, stat_tile, vbox, wrap_label)
 
 
 def local_date(utc_text: str, with_time: bool = False) -> str:
@@ -187,11 +187,14 @@ class DashboardPage(QWidget):
         self.sel_label = label("", muted=True)
         self.btn_select_all = button("Выбрать всех", chip=True, on_click=self.select_all)
         self.btn_clear = button("Снять", chip=True, on_click=self.clear_selection)
+        self.btn_move = button("Перенести в месяц…", chip=True, on_click=self.move_clients)
+        self.btn_move.setToolTip("Отмеченных клиентов — в другой месяц (например, не успели закончить в этом): "
+                                 "вместе с документами и Master-PDF")
         self.btn_send = button("Передать клиентов…", chip=True, on_click=self.send_clients)
         self.btn_send.setToolTip("Сохранить отмеченных клиентов в файл .e9pay для другого сотрудника")
         self.btn_receive = button("Принять клиентов…", chip=True, on_click=self.receive_clients)
         self.btn_receive.setToolTip("Открыть файл .e9pay от коллеги (или перетащите его в окно)")
-        for wdg in (self.sel_label, self.btn_select_all, self.btn_clear):
+        for wdg in (self.sel_label, self.btn_select_all, self.btn_move, self.btn_clear):
             filters.addWidget(wdg)
 
         self.grid = QGridLayout()
@@ -231,6 +234,8 @@ class DashboardPage(QWidget):
         self.sel_label.setText(f"Отмечено: {n}" if n else "")
         self.export_b.setText(f"Экспорт реестра ({n} отмечено)" if n else "Экспорт реестра")
         self.btn_clear.setVisible(bool(n))
+        self.btn_move.setVisible(bool(n))
+        self.btn_move.setText(f"Перенести в месяц ({n})…" if n else "Перенести в месяц…")
         self.btn_send.setEnabled(bool(n))
         self.btn_send.setText(f"Передать клиентов ({n})…" if n else "Передать клиентов…")
         self.btn_send.setProperty("primary", bool(n))
@@ -240,6 +245,30 @@ class DashboardPage(QWidget):
     def select_all(self):
         self.selected = {c.id for c in self.state.db.clients(self.state.period)}
         self.refresh()
+
+    def move_clients(self):
+        ids = [c.id for c in self.state.db.clients(self.state.period) if c.id in self.selected]
+        if not ids:
+            return
+        target = choose_month(self, self.state.period, len(ids))
+        if not target:
+            return
+        res = services.move_clients(self.state.db, ids, target)
+        self.selected.clear()
+        self.state.data_changed.emit()
+        y, m = target.split("-")
+        title = f"{MONTHS_RU[int(m) - 1]} {y}"
+        msg = f"Перенесено в {title}: {len(res.moved)}"
+        if res.failed:
+            msg += "\n\nНе перенесены (остались в этом месяце):\n• " + "\n• ".join(res.failed)
+        box = QMessageBox(self)
+        box.setWindowTitle("Перенос клиентов")
+        box.setText(msg)
+        go = box.addButton(f"Открыть {title}", QMessageBox.AcceptRole) if res.moved else None
+        box.addButton("OK", QMessageBox.RejectRole)
+        box.exec()
+        if go is not None and box.clickedButton() == go:
+            self.state.set_period(target)
 
     def clear_selection(self):
         self.selected.clear()
@@ -367,3 +396,31 @@ class DashboardPage(QWidget):
                                                               f"Создано архивов: {len(res)}\n{folder}")),
                  on_fail=lambda err: (self.state.busy_changed.emit(""),
                                       QMessageBox.warning(self, "Ошибка", err)))
+
+
+def choose_month(parent, current: str, count: int) -> str:
+    """Окно выбора месяца для переноса: по умолчанию — следующий за текущим."""
+    from PySide6.QtWidgets import QComboBox, QDialog
+
+    from .state import shift_period
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Перенести в месяц")
+    combo = QComboBox()
+    for k in range(-12, 13):
+        p = shift_period(current, k)
+        if p == current:
+            continue
+        y, m = p.split("-")
+        combo.addItem(f"{MONTHS_RU[int(m) - 1]} {y}   ({p})", p)
+    combo.setCurrentIndex(combo.findData(shift_period(current, 1)))
+    ok = button("Перенести", primary=True, on_click=dlg.accept)
+    cancel = button("Отмена", on_click=dlg.reject)
+    y, m = current.split("-")
+    dlg.setLayout(vbox(label(f"Клиентов: {count} · сейчас в месяце {MONTHS_RU[int(m) - 1]} {y}", h2=True),
+                       label("Куда перенести:", muted=True), combo,
+                       wrap_label("Папки клиентов с документами и Master-PDF переедут в выбранный месяц. "
+                                  "Этапы и отметки сохранятся.", dim=True),
+                       hbox(None, cancel, ok), spacing=10, margins=(20, 18, 20, 16)))
+    dlg.setMinimumWidth(440)
+    return combo.currentData() if dlg.exec() == QDialog.Accepted else ""
