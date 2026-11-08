@@ -31,11 +31,12 @@ class ClientPage(QWidget):
         back = button("←  Назад", on_click=lambda: self.state.navigate.emit("dashboard"))
         back.setToolTip("Вернуться к списку клиентов")
         back.setStyleSheet("QPushButton{font-size:15px;font-weight:700;min-height:40px;padding:0 18px;}")
-        self.btn_folder = button("Открыть папку", on_click=lambda: open_path(self.client().folder))
+        self.btn_folder = button("📂", on_click=lambda: open_path(self.client().folder))
+        self.btn_folder.setToolTip("Открыть папку клиента")
+        self.btn_folder.setStyleSheet("QPushButton{font-size:18px;padding:0 12px;}")
         self.btn_report = button("Отчет OCR", on_click=self.ocr_report)
         self.btn_report.setToolTip("Строки, которые увидел OCR, и что из них взято — чтобы отправить разработчику")
-        self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
-        self.btn_take = button("⤓ Забрать документы", on_click=self.take_documents)
+        self.btn_take = button("⤓ Забрать", on_click=self.take_documents)
         self.btn_take.setToolTip("Забрать все файлы из общей папки (Настройки) в этого клиента: они перемещаются, "
                                  "договор проверяется — тот ли это клиент")
         self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
@@ -46,7 +47,7 @@ class ClientPage(QWidget):
         name_row = hbox(self.name, self.badge_host, spacing=14)
         name_row.setStretch(0, 1)
         header = vbox(hbox(back, self.crumb, None, self.btn_delete, self.btn_report, self.btn_folder, self.btn_take,
-                           self.btn_zip, self.btn_master, spacing=10), name_row, spacing=6)
+                           self.btn_master, spacing=10), name_row, spacing=6)
 
         # --- профиль
         self.profile = frame("panel")
@@ -381,13 +382,13 @@ class ClientPage(QWidget):
 
     def _busy(self, title, on_progress_text=""):
         self.busy.start(title, on_progress_text)
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop,
+        for w in (self.btn_master, self.btn_recheck, self.btn_delete, self.btn_report, self.drop,
                   self.btn_take):
             w.setEnabled(False)
 
     def _idle(self):
         self.busy.stop()
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop,
+        for w in (self.btn_master, self.btn_recheck, self.btn_delete, self.btn_report, self.drop,
                   self.btn_take):
             w.setEnabled(True)
         self.state.busy_changed.emit("")
@@ -512,15 +513,6 @@ class ClientPage(QWidget):
         box.exec()
         if box.clickedButton() == open_b:
             open_path(res.path)
-
-    def export_zip(self):
-        folder = QFileDialog.getExistingDirectory(self, "Куда сохранить ZIP клиента")
-        if not folder:
-            return
-        out = services.export_client_zip(self.state.db, self.client_id, Path(folder))
-        services.mark_done(self.state.db, [self.client_id])
-        self.state.data_changed.emit()
-        QMessageBox.information(self, "Готово", f"Архив сохранен:\n{out}")
 
     @staticmethod
     def _scan_result(docs, doc_type):
