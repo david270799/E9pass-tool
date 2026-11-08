@@ -19,6 +19,17 @@ def shift_period(period: str, months: int) -> str:
     return f"{y:04d}-{m:02d}"
 
 
+def inbox_folder() -> str:
+    """Общая папка, откуда кнопка «Забрать документы» забирает файлы в карточку клиента (Настройки)."""
+    from PySide6.QtCore import QSettings
+    return QSettings("E9pay", "E9pay").value("inbox_folder", "", type=str)
+
+
+def set_inbox_folder(path: str):
+    from PySide6.QtCore import QSettings
+    QSettings("E9pay", "E9pay").setValue("inbox_folder", path)
+
+
 class AppState(QObject):
     period_changed = Signal(str)
     data_changed = Signal()                # клиенты/документы изменились

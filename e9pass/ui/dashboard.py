@@ -209,7 +209,8 @@ class DashboardPage(QWidget):
         self.empty = label("В этом месяце пока нет клиентов. Перетащите архивы в зону выше.", muted=True)
         self.empty.setAlignment(Qt.AlignCenter)
 
-        zip_all = button("Экспорт в ZIP (все клиенты)", on_click=self.export_zip_all)
+        self.zip_b = zip_all = button("Экспорт в ZIP (все клиенты)", on_click=self.export_zip_all)
+        zip_all.setToolTip("ZIP по каждому клиенту: только отмеченные галочкой, если не отмечен никто — все")
         # передача коллеге — внизу: строка фильтров с этапами иначе не помещается
         footer = hbox(self.btn_send, self.btn_receive, None, zip_all)
 
@@ -233,6 +234,7 @@ class DashboardPage(QWidget):
         n = len(self.selected)
         self.sel_label.setText(f"Отмечено: {n}" if n else "")
         self.export_b.setText(f"Экспорт реестра ({n} отмечено)" if n else "Экспорт реестра")
+        self.zip_b.setText(f"Экспорт в ZIP ({n} отмечено)" if n else "Экспорт в ZIP (все клиенты)")
         self.btn_clear.setVisible(bool(n))
         self.btn_move.setVisible(bool(n))
         self.btn_move.setText(f"Перенести в месяц ({n})…" if n else "Перенести в месяц…")
@@ -374,6 +376,8 @@ class DashboardPage(QWidget):
 
     def export_zip_all(self):
         clients = self.state.db.clients(self.state.period)
+        if self.selected:  # только отмеченные галочкой
+            clients = [c for c in clients if c.id in self.selected]
         if not clients:
             return
         folder = QFileDialog.getExistingDirectory(self, "Куда сохранить ZIP-архивы")

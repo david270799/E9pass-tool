@@ -175,6 +175,51 @@ def read_contract(path: Path, engine=None) -> ContractData:
     return res
 
 
+CONTRACT_MARKERS = ("신청서", "E9PASS")
+
+
+def contract_in_file(path: Path, engine=None) -> Optional[ContractData]:
+    """Договор E9PASS среди документов клиента (None — это другой документ). Скан читается OCR."""
+    path = Path(path)
+    if path.suffix.lower() != ".pdf":
+        return None
+    try:
+        import pymupdf
+        with pymupdf.open(path) as doc:
+            if doc.needs_pass:
+                return None
+            text = "\n".join(p.get_text() for p in doc)
+        if not text.strip():
+            text = _ocr_text(path, engine)
+    except Exception:  # noqa: BLE001 — не PDF / поврежден: проверять нечего
+        return None
+    if not any(m in text for m in CONTRACT_MARKERS) or "이름" not in text:
+        return None
+    res = ContractData(file=path.name, source="текст PDF")
+    fields = parse_contract_text(text)
+    res.full_name, res.birth_date, res.phone, res.email = (fields["full_name"], fields["birth_date"],
+                                                           fields["phone"], fields["email"])
+    return res
+
+
+def mismatch_with_client(data: ContractData, client) -> List[str]:
+    """Чем договор не совпадает с клиентом: ФИО, дата рождения (первые 6 цифр ID), телефон."""
+    from .services import name_matches_client
+
+    out = []
+    both_full = len(data.full_name.split()) >= 2 and len((client.full_name or "").split()) >= 2
+    if both_full and not (name_matches_client(data.full_name, client.full_name)
+                          or name_matches_client(client.full_name, data.full_name)):
+        out.append(f"ФИО в договоре: {data.full_name}, у клиента: {client.full_name}")
+    birth = client.birth_date or re.sub(r"\D", "", client.arc_number or "")[:6]
+    if data.birth_date and birth and data.birth_date != birth:
+        out.append(f"дата рождения в договоре: {data.birth_date}, у клиента: {birth}")
+    phone = re.sub(r"\D", "", client.phone or "")
+    if data.phone and phone and re.sub(r"\D", "", data.phone) != phone:
+        out.append(f"телефон в договоре: {data.phone}, у клиента: {client.phone}")
+    return out
+
+
 def read_contracts(paths: List[Path], engine=None, progress: Callable[[str], None] = lambda _m: None,
                    ) -> List[ContractData]:
     out = []

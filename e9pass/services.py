@@ -638,6 +638,56 @@ def recheck_all_unknown(db: Database) -> int:
     return found
 
 
+INBOX_SKIP = ("~$", ".", "Thumbs.db", "desktop.ini")  # временные файлы Office и системные
+
+
+def inbox_files(inbox: Path) -> List[Path]:
+    """Файлы общей папки (без вложенных папок, временных и системных файлов)."""
+    inbox = Path(inbox)
+    if not inbox.is_dir():
+        return []
+    return sorted(f for f in inbox.iterdir() if f.is_file() and not f.name.startswith(INBOX_SKIP))
+
+
+def check_inbox(db: Database, client_id: int, files: List[Path], engine: Optional[OcrEngine] = None,
+                progress: Progress = _noop) -> List[str]:
+    """Договоры E9PASS среди файлов — того ли они клиента. Список несовпадений (пусто — все в порядке)."""
+    from . import contracts
+
+    client = db.client(client_id)
+    problems = []
+    for f in files:
+        progress(f"Проверяю {f.name}")
+        data = contracts.contract_in_file(f, engine)
+        if data:
+            problems += [f"{f.name}: {m}" for m in contracts.mismatch_with_client(data, client)]
+    return problems
+
+
+def take_from_inbox(db: Database, client_id: int, files: List[Path], engine: Optional[OcrEngine] = None,
+                    progress: Progress = _noop) -> Tuple[List[int], List[str]]:
+    """Забрать файлы из общей папки: добавить клиенту и удалить из папки (перемещение, не копия).
+    Пустые телефон / e-mail клиента заполняются из его договора. → (id документов, что не удалось удалить)."""
+    from . import contracts
+
+    client = db.client(client_id)
+    for f in files:
+        data = contracts.contract_in_file(f, engine) if f.suffix.lower() == ".pdf" else None
+        if data:
+            empty = {k: v for k, v in (("phone", data.phone), ("email", data.email)) if v and not getattr(client, k)}
+            if empty:
+                set_client_fields(db, client_id, **empty)
+            break
+    ids = add_documents(db, client_id, files, engine, progress)
+    left = []
+    for f in files:
+        try:
+            f.unlink()
+        except OSError:
+            left.append(f.name)
+    return ids, left
+
+
 @dataclass
 class MoveResult:
     moved: List[str] = field(default_factory=list)

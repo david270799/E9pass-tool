@@ -85,3 +85,46 @@ def test_manual_input_normalized():
     assert contracts.normalize_mobile("01099998888") == "010-9999-8888"
     assert [contracts.normalize_birth(x) for x in ("930316", "93-03-16", "16.03.1993", "1993.03.16", "991399")] == \
         ["930316", "930316", "930316", "930316", ""]
+
+
+def _client(tmp_path, monkeypatch, **fields):
+    from e9pass.db import Database
+    monkeypatch.setenv("E9PASS_HOME", str(tmp_path / "home"))
+    db = Database(tmp_path / "db.sqlite3")
+    folder = tmp_path / "home" / "periods" / "2026-11" / "client"
+    folder.mkdir(parents=True)
+    cid = db.add_client("2026-11", folder_path=str(folder), **fields)
+    return db, cid
+
+
+class NoOcr:
+    def read_image_lines(self, path):
+        return []
+
+
+def test_inbox_contract_of_this_client_is_taken(tmp_path, monkeypatch):
+    db, cid = _client(tmp_path, monkeypatch, full_name="KARIMOV JASUR BAKHTIYOR UGLI", arc_number="900101-5123456",
+                      birth_date="900101")
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    make_contract(inbox / "dogovor.pdf")
+    (inbox / "~$tmp.docx").write_bytes(b"x")                        # временный файл Office не берем
+    files = services.inbox_files(inbox)
+    assert [f.name for f in files] == ["dogovor.pdf"]
+    assert services.check_inbox(db, cid, files, engine=NoOcr()) == []
+    ids, left = services.take_from_inbox(db, cid, files, engine=NoOcr())
+    assert len(ids) == 1 and not left and not (inbox / "dogovor.pdf").exists()   # перемещен, а не скопирован
+    assert db.documents(cid)[0].path.exists()
+    c = db.client(cid)
+    assert c.phone == "010-1234-5678" and c.email == "jasur.karimov@gmail.com"   # пустые поля — из договора
+
+
+def test_inbox_contract_of_other_client_is_reported(tmp_path, monkeypatch):
+    db, cid = _client(tmp_path, monkeypatch, full_name="BOBOEV RUSTAM RAVSHANOVICH", arc_number="950303-5345678",
+                      phone="010-3456-7890")
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    make_contract(inbox / "dogovor.pdf")
+    problems = services.check_inbox(db, cid, services.inbox_files(inbox), engine=NoOcr())
+    assert len(problems) == 3 and "ФИО" in problems[0] and "дата рождения" in problems[1] and "телефон" in problems[2]
+    assert (inbox / "dogovor.pdf").exists()                         # проверка ничего не забирает

@@ -81,6 +81,18 @@ class DocTypesPage(QWidget):
             hbox(self.btn_delete, button("Сохранить", primary=True, on_click=self.save_rule)),
             spacing=12, margins=(18, 16, 18, 16)))
 
+        # общая папка, откуда «Забрать документы» в карточке клиента берет файлы
+        from .state import inbox_folder
+        self.inbox_label = label(inbox_folder() or "не выбрана", mono=True)
+        self.inbox_label.setMinimumWidth(10)
+        inbox = frame("panel")
+        inbox.setLayout(hbox(vbox(label("ОБЩАЯ ПАПКА ДОКУМЕНТОВ", caps=True),
+                                  label("Кнопка «Забрать документы» в карточке клиента забирает отсюда все файлы "
+                                        "(перемещает, не копирует) и проверяет договор — тот ли это клиент.", dim=True),
+                                  self.inbox_label, spacing=4),
+                             None, button("Выбрать папку…", on_click=self.choose_inbox),
+                             spacing=14, margins=(18, 12, 18, 12)))
+
         body = QGridLayout()
         body.setSpacing(16)
         body.addLayout(vbox(self.tree, hint, spacing=8), 0, 0)
@@ -88,8 +100,15 @@ class DocTypesPage(QWidget):
         body.setColumnStretch(0, 1)
         self.setLayout(vbox(hbox(vbox(label("Настройки", muted=True), label("Типы документов и очередь Master-PDF",
                                                                            h1=True), spacing=2), None, restore_b, add_b),
-                            body, spacing=16, margins=(32, 24, 32, 20)))
+                            inbox, body, spacing=16, margins=(32, 24, 32, 20)))
         self.refresh()
+
+    def choose_inbox(self):
+        from .state import inbox_folder, set_inbox_folder
+        path = QFileDialog.getExistingDirectory(self, "Общая папка документов", inbox_folder())
+        if path:
+            set_inbox_folder(path)
+            self.inbox_label.setText(path)
 
     def refresh(self, select_id=None):
         self.tree.blockSignals(True)

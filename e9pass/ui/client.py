@@ -35,12 +35,18 @@ class ClientPage(QWidget):
         self.btn_report = button("Отчет OCR", on_click=self.ocr_report)
         self.btn_report.setToolTip("Строки, которые увидел OCR, и что из них взято — чтобы отправить разработчику")
         self.btn_zip = button("Экспорт ZIP клиента", on_click=self.export_zip)
+        self.btn_take = button("⤓ Забрать документы", on_click=self.take_documents)
+        self.btn_take.setToolTip("Забрать все файлы из общей папки (Настройки) в этого клиента: они перемещаются, "
+                                 "договор проверяется — тот ли это клиент")
         self.btn_master = button("Собрать Master-PDF", primary=True, on_click=self.build_master)
         self.btn_delete = button("Удалить клиента", on_click=self.delete_client)
         self.btn_delete.setStyleSheet(f"QPushButton{{border-color:{theme.ACCENT};color:{theme.ACCENT};}}")
         self.btn_delete.setToolTip("Удалить клиента и все его файлы из программы")
-        header = hbox(vbox(hbox(back, self.crumb, None, spacing=12), hbox(self.name, self.badge_host, None, spacing=14),
-                           spacing=2), None, self.btn_delete, self.btn_report, self.btn_folder, self.btn_zip, self.btn_master)
+        # кнопки — в строке с «Назад», ФИО — отдельной строкой во всю ширину (длинное не обрезается)
+        name_row = hbox(self.name, self.badge_host, spacing=14)
+        name_row.setStretch(0, 1)
+        header = vbox(hbox(back, self.crumb, None, self.btn_delete, self.btn_report, self.btn_folder, self.btn_take,
+                           self.btn_zip, self.btn_master, spacing=10), name_row, spacing=6)
 
         # --- профиль
         self.profile = frame("panel")
@@ -375,12 +381,14 @@ class ClientPage(QWidget):
 
     def _busy(self, title, on_progress_text=""):
         self.busy.start(title, on_progress_text)
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop):
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop,
+                  self.btn_take):
             w.setEnabled(False)
 
     def _idle(self):
         self.busy.stop()
-        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop):
+        for w in (self.btn_master, self.btn_recheck, self.btn_zip, self.btn_delete, self.btn_report, self.drop,
+                  self.btn_take):
             w.setEnabled(True)
         self.state.busy_changed.emit("")
 
@@ -400,6 +408,56 @@ class ClientPage(QWidget):
         self._busy(f"Добавляю документы ({len(files)})…", "загрузка модели распознавания")
         run_task(services.add_documents, self.state.db, cid, files, on_progress=self._progress,
                  on_done=lambda _r: (self._idle(), self.state.data_changed.emit()),
+                 on_fail=lambda err: (self._idle(), self.state.data_changed.emit(),
+                                      QMessageBox.warning(self, "Ошибка", err)))
+
+    def take_documents(self):
+        from .state import inbox_folder
+        folder = inbox_folder()
+        if not folder or not Path(folder).is_dir():
+            if QMessageBox.question(self, "Общая папка", "Общая папка документов не выбрана (или ее больше нет).\n"
+                                    "Открыть Настройки, чтобы выбрать?") == QMessageBox.Yes:
+                self.state.navigate.emit("doctypes")
+            return
+        files = services.inbox_files(Path(folder))
+        if not files:
+            QMessageBox.information(self, "Забрать документы", f"В общей папке нет файлов:\n{folder}")
+            return
+        cid = self.client_id
+        self._busy(f"Проверяю документы ({len(files)})…", "договор — тот ли клиент")
+
+        def checked(problems):
+            self._idle()
+            if problems:
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Warning)
+                box.setWindowTitle("Не тот клиент?")
+                box.setText("Похоже, вы пытаетесь загрузить документы другого клиента. Ничего не забрано.\n\n• "
+                            + "\n• ".join(problems)
+                            + "\n\nЕсли программа прочитала договор неправильно — нажмите «Всё равно забрать».")
+                force = box.addButton("Всё равно забрать", QMessageBox.DestructiveRole)
+                box.addButton("Отмена", QMessageBox.RejectRole)
+                box.exec()
+                if box.clickedButton() != force:
+                    return
+            self._take(cid, files)
+
+        run_task(services.check_inbox, self.state.db, cid, files, on_progress=self._progress, on_done=checked,
+                 on_fail=lambda err: (self._idle(), QMessageBox.warning(self, "Ошибка", err)))
+
+    def _take(self, cid, files):
+        self._busy(f"Забираю документы ({len(files)})…", "")
+
+        def done(res):
+            self._idle()
+            self.state.data_changed.emit()
+            ids, left = res
+            self.state.busy_changed.emit(f"Забрано файлов: {len(ids)}")
+            if left:
+                QMessageBox.warning(self, "Забрать документы", f"Забрано файлов: {len(ids)}\n\nНе удалось убрать "
+                                    "из общей папки (файл открыт?) — удалите вручную:\n• " + "\n• ".join(left))
+
+        run_task(services.take_from_inbox, self.state.db, cid, files, on_progress=self._progress, on_done=done,
                  on_fail=lambda err: (self._idle(), self.state.data_changed.emit(),
                                       QMessageBox.warning(self, "Ошибка", err)))
 
