@@ -1,5 +1,6 @@
 """Шаг 1: дашборд периода — архивы, счетчики, карточки клиентов, экспорт реестра."""
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -25,7 +26,7 @@ def local_date(utc_text: str, with_time: bool = False) -> str:
 
 
 class ClientCard(QFrame):
-    def __init__(self, state, client, docs, rule_names, selected=False, on_select=None):
+    def __init__(self, state, client, docs, rule_names, selected=False, on_select=None, copies=()):
         super().__init__()
         self.state, self.client_id = state, client.id
         self.setProperty("card", True)
@@ -83,6 +84,11 @@ class ClientCard(QFrame):
             chips.addWidget(ch)
         if client.printed:
             chips.addWidget(chip("напечатан"))
+        if copies:  # тот же ARC в другом месяце: импорт телефонов / правки могли уйти туда
+            ch = chip("⚠ копия в " + ", ".join(copies), "warn")
+            ch.setToolTip("Клиент с этим же номером ARC есть еще в месяце: " + ", ".join(copies)
+                          + ".\nЛишнюю запись можно удалить (✕) или перенести (галочка → «Перенести в месяц»).")
+            chips.addWidget(ch)
         added = label(f"добавлен {local_date(client.created_at)}", dim=True)
         added.setToolTip(f"Дата добавления в программу: {local_date(client.created_at, with_time=True)}")
         lay = vbox(top, hbox(arc, info, None, spacing=14), addr, added, chips, spacing=6, margins=(16, 14, 16, 14))
@@ -322,9 +328,15 @@ class DashboardPage(QWidget):
             shown = [c for c in shown if q in c.full_name.lower() or q in c.arc_number]
         clear_layout(self.grid)
         names = db.rule_names()
+        arc_periods = {}
+        for x in db.all_clients():
+            digits = re.sub(r"\D", "", x.arc_number or "")
+            if len(digits) == 13:
+                arc_periods.setdefault(digits, set()).add(x.batch_period)
         for i, c in enumerate(shown):
+            copies = sorted(arc_periods.get(re.sub(r"\D", "", c.arc_number or ""), set()) - {p})
             self.grid.addWidget(ClientCard(self.state, c, db.documents(c.id), names, c.id in self.selected,
-                                           self._toggle), i // 3, i % 3)
+                                           self._toggle, copies), i // 3, i % 3)
         for col in range(3):
             self.grid.setColumnStretch(col, 1)
         self.empty.setVisible(not clients)

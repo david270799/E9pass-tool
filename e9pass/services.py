@@ -841,8 +841,8 @@ def build_master(db: Database, client_id: int, progress: Progress = _noop) -> Ma
 # ====================================================================== экспорт
 
 REGISTRY_COLUMNS = [("№", 6), ("ФИО (заглавными)", 30), ("ФИО (строчными)", 30), ("Номер ARC", 18),
-                    ("Дата рождения", 14), ("Гражданство", 16), ("Адрес регистрации", 60),
-                    ("Телефон", 16), ("E-mail", 28)]
+                    ("Номер ARC без черты", 18), ("Дата рождения", 14), ("Гражданство", 16),
+                    ("Адрес регистрации", 60), ("E-mail", 28), ("Телефон", 16)]
 
 
 def export_registry(clients: List[Client], out_path: Path) -> Path:
@@ -859,8 +859,8 @@ def export_registry(clients: List[Client], out_path: Path) -> Path:
         ws.column_dimensions[get_column_letter(i)].width = width
     for n, c in enumerate(clients, start=1):
         name = normalize_name(c.full_name)
-        ws.append([n, name.upper(), name.lower(), c.arc_number, c.birth_date, c.nationality, c.registered_address,
-                   c.phone, c.email])
+        ws.append([n, name.upper(), name.lower(), c.arc_number, re.sub(r"\D", "", c.arc_number or ""), c.birth_date,
+                   c.nationality, c.registered_address, c.email, c.phone])
         for cell in ws[ws.max_row][1:]:
             cell.number_format = "@"
     ws.freeze_panes = "A2"
@@ -914,7 +914,7 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
     Если есть строка заголовков (как в экспортированном реестре) — значения берутся из колонок
     «Номер ARC», «Адрес регистрации», «Телефон», «E-mail». Без заголовков в каждой строке ищутся
     ARC (иначе ФИО), телефон 010-… и e-mail — даже если все в одной ячейке.
-    Клиент ищется по ARC во всех периодах (свежий приоритетнее), без ARC — по ФИО в периоде.
+    Клиент ищется по ARC: сначала в открытом месяце, иначе во всех (свежий приоритетнее); без ARC — по ФИО.
     """
     from openpyxl import load_workbook
 
@@ -948,7 +948,9 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
             client = None
             if arc_m:
                 found = db.clients_by_arc(arc_m.group(1) + arc_m.group(2))
-                client = found[0] if found else None
+                # клиент открытого месяца важнее копии с тем же ARC в другом месяце
+                here = [c for c in found if c.batch_period == period]
+                client = (here or found or [None])[0]
             if client is None:
                 # ФИО может стоять в любой ячейке или вместе с телефоном/почтой
                 low = " " + re.sub(r"\s+", " ", text.lower()) + " "
@@ -976,7 +978,8 @@ def import_registry_contacts(db: Database, path: Path, period: Optional[str] = N
                 if "registered_address" in updates:
                     set_client_fields(db, client.id)  # снять предупреждение «адрес не найден»
                 mark_changed(db, client.id)
-                res.updated.append(f"{client.full_name}: {', '.join(notes)}")
+                where = f" (месяц {client.batch_period})" if period and client.batch_period != period else ""
+                res.updated.append(f"{client.full_name}{where}: {', '.join(notes)}")
     wb.close()
     return res
 

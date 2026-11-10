@@ -270,3 +270,29 @@ def test_move_clients_to_another_month(env, tmp_path):
     assert all(d.path.exists() and c.folder in d.path.parents for d in db.documents(cid))
     assert c.master_pdf == str(c.folder / master.name) and Path(c.master_pdf).exists()
     assert services.move_clients(db, [cid], "2026-09").moved == []      # уже в этом месяце
+
+
+def test_registry_import_prefers_client_of_open_month(env, tmp_path):
+    db, cid, _ = env                                              # TEST, 950101-5123456, 2026-08
+    copy = db.add_client("2026-07", full_name="TEST", arc_number="950101-5123456", birth_date="950101",
+                         created_at="2099-01-01 00:00:00")        # та же карта в другом месяце, «свежее»
+    from openpyxl import Workbook
+    wb = Workbook()
+    wb.active.append(["ФИО", "Номер ARC", "Телефон", "E-mail"])
+    wb.active.append(["TEST", "950101-5123456", "010-1111-2222", "t@gmail.com"])
+    wb.save(tmp_path / "r.xlsx")
+    services.import_registry_contacts(db, tmp_path / "r.xlsx", period="2026-08")
+    assert db.client(cid).phone == "010-1111-2222" and db.client(copy).phone == ""
+
+
+def test_registry_columns_and_roundtrip(env, tmp_path):
+    db, cid, _ = env
+    db.update_client(cid, phone="010-1234-5678", email="t@gmail.com")
+    out = services.export_registry([db.client(cid)], tmp_path / "r.xlsx")
+    from openpyxl import load_workbook
+    rows = list(load_workbook(out).active.values)
+    assert rows[0][3:5] == ("Номер ARC", "Номер ARC без черты") and rows[0][8:] == ("E-mail", "Телефон")
+    assert rows[1][3:5] == ("950101-5123456", "9501015123456") and rows[1][8:] == ("t@gmail.com", "010-1234-5678")
+    db.update_client(cid, phone="", email="")
+    services.import_registry_contacts(db, out, period="2026-08")      # тот же файл загружается обратно
+    assert (db.client(cid).phone, db.client(cid).email) == ("010-1234-5678", "t@gmail.com")
