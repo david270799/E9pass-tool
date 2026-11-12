@@ -93,6 +93,30 @@ class DocTypesPage(QWidget):
                              None, button("Выбрать папку…", on_click=self.choose_inbox),
                              spacing=14, margins=(18, 12, 18, 12)))
 
+        # синхронизация между компьютерами через общую папку на сервере (только локальная сеть)
+        from .state import computer_label, sync_auto, sync_folder
+        from .. import config
+        self.sync_path = QLineEdit(sync_folder())
+        self.sync_path.setPlaceholderText("\\\\SERVER\\E9pay — общая папка на сервере")
+        self.sync_name = QLineEdit(computer_label() or config.computer_name())
+        self.sync_name.setToolTip("Как этот компьютер называется в синхронизации (видно, кто что изменил)")
+        self.sync_auto = QCheckBox("При запуске и каждые 30 минут")
+        self.sync_auto.setChecked(sync_auto())
+        self.sync_info = label("", muted=True)
+        sync_box = frame("panel")
+        sync_box.setLayout(vbox(
+            label("СИНХРОНИЗАЦИЯ МЕЖДУ КОМПЬЮТЕРАМИ", caps=True),
+            label("Общая папка на сервере — по ней компьютеры обмениваются клиентами, документами и моделью OCR "
+                  "(только локальная сеть). Удаление — только на своем компьютере.", dim=True),
+            hbox(self.sync_path, button("Выбрать…", on_click=self.choose_sync), spacing=8),
+            hbox(vbox(label("Имя этого компьютера", dim=True), self.sync_name, spacing=4),
+                 vbox(label("Автообновление", dim=True), self.sync_auto, spacing=4), spacing=20),
+            hbox(self.sync_info, None, button("Сохранить", on_click=self.save_sync),
+                 button("⟳ Синхронизировать сейчас", primary=True, on_click=self.sync_now), spacing=10),
+            spacing=8, margins=(18, 12, 18, 12)))
+        self._sync_info()
+        state.sync_status.connect(lambda _t: self._sync_info())
+
         body = QGridLayout()
         body.setSpacing(16)
         body.addLayout(vbox(self.tree, hint, spacing=8), 0, 0)
@@ -100,8 +124,33 @@ class DocTypesPage(QWidget):
         body.setColumnStretch(0, 1)
         self.setLayout(vbox(hbox(vbox(label("Настройки", muted=True), label("Типы документов и очередь Master-PDF",
                                                                            h1=True), spacing=2), None, restore_b, add_b),
-                            inbox, body, spacing=16, margins=(32, 24, 32, 20)))
+                            inbox, sync_box, body, spacing=12, margins=(32, 24, 32, 20)))
         self.refresh()
+
+    def _sync_info(self):
+        from .. import sync
+        last = self.state.db.meta("sync_last_local", "")
+        pcs = sync.computers(self.state.db)
+        self.sync_info.setText((f"Последняя синхронизация: {last}" if last else "Еще не синхронизировано")
+                               + (f" · компьютеры: {', '.join(pcs)}" if pcs else ""))
+
+    def choose_sync(self):
+        path = QFileDialog.getExistingDirectory(self, "Общая папка на сервере", self.sync_path.text())
+        if path:
+            self.sync_path.setText(path)
+            self.save_sync()
+
+    def save_sync(self):
+        from .state import save_sync_settings
+        name = self.sync_name.text().strip()
+        save_sync_settings(self.sync_path.text().strip(), name, self.sync_auto.isChecked())
+        from .. import config
+        self.state.db.computer = config.computer_name()
+        self.state.busy_changed.emit("Настройки синхронизации сохранены")
+
+    def sync_now(self):
+        self.save_sync()
+        self.state.sync_requested.emit(True)
 
     def choose_inbox(self):
         from .state import inbox_folder, set_inbox_folder

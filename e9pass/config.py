@@ -54,3 +54,17 @@ def unrar_tool() -> str:
         if candidate.exists():
             return str(candidate)
     return ""
+
+
+_computer_name = ""
+
+
+def computer_name() -> str:
+    """Имя этого компьютера для синхронизации (Настройки), по умолчанию — имя Windows."""
+    import socket
+    return _computer_name or socket.gethostname()
+
+
+def set_computer_name(name: str):
+    global _computer_name
+    _computer_name = (name or "").strip()

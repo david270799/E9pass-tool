@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -29,6 +30,8 @@ CREATE TABLE IF NOT EXISTS clients (
     phone TEXT DEFAULT '',
     email TEXT DEFAULT '',
     stage TEXT DEFAULT 'received',       -- received / progress / done — этап работы с клиентом
+    uid TEXT DEFAULT '',                 -- постоянный id для синхронизации между компьютерами
+    field_times TEXT DEFAULT '{}',       -- JSON {поле: [время UTC, компьютер]} — какое изменение новее
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_clients_period ON clients(batch_period);
@@ -42,9 +45,18 @@ CREATE TABLE IF NOT EXISTS client_documents (
     is_processed_scan INTEGER DEFAULT 0, -- 1 = файл создан редактором скана
     password_status TEXT DEFAULT '',     -- '' / unlocked / locked
     detected_by TEXT DEFAULT '',         -- как определен тип
+    file_hash TEXT DEFAULT '',           -- SHA-1 файла (синхронизация: один и тот же файл не копируется дважды)
     added_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_docs_client ON client_documents(client_id);
+
+-- синхронизация: что удалено на этом компьютере (у других остается) — обратно не забирать
+CREATE TABLE IF NOT EXISTS sync_ignored (
+    uid TEXT NOT NULL,
+    doc_hash TEXT DEFAULT '',            -- '' — клиент целиком, иначе один документ
+    PRIMARY KEY (uid, doc_hash)
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
 CREATE TABLE IF NOT EXISTS doc_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +100,14 @@ CLIENT_FIELDS = ("full_name", "arc_number", "birth_date", "nationality", "regist
                  "bank_name", "account_number", "folder_path", "status", "source_archive",
                  "master_pdf", "printed", "phone", "email", "stage")
 
+# Поля, которые синхронизируются между компьютерами (пути к файлам у каждого компьютера свои)
+SYNC_FIELDS = tuple(f for f in CLIENT_FIELDS if f not in ("folder_path", "master_pdf")) + ("batch_period", "warnings")
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+
+
 # Этапы работы с клиентом: архив принят → идет работа (любые изменения) → экспортирован.
 STAGE_RECEIVED, STAGE_PROGRESS, STAGE_DONE = "received", "progress", "done"
 STAGES = (STAGE_RECEIVED, STAGE_PROGRESS, STAGE_DONE)
@@ -114,6 +134,8 @@ class Client:
     phone: str = ""
     email: str = ""
     stage: str = STAGE_RECEIVED
+    uid: str = ""
+    field_times: str = "{}"
 
     @property
     def folder(self) -> Path:
@@ -130,6 +152,7 @@ class Document:
     is_processed_scan: int = 0
     password_status: str = ""
     detected_by: str = ""
+    file_hash: str = ""
     added_at: str = ""
 
     @property
@@ -153,6 +176,7 @@ class DocRule:
 class Database:
     def __init__(self, path: Optional[Path] = None):
         self.path = Path(path) if path else config.db_path()
+        self.computer = config.computer_name()  # имя в отметках времени изменений (Настройки → синхронизация)
         with self.conn() as c:
             c.executescript(SCHEMA)
             # миграция старых баз: новые колонки
@@ -162,6 +186,12 @@ class Database:
                     c.execute(f"ALTER TABLE clients ADD COLUMN {col} TEXT DEFAULT ''")
             if "stage" not in cols:
                 c.execute(f"ALTER TABLE clients ADD COLUMN stage TEXT DEFAULT '{STAGE_RECEIVED}'")
+            for col, default in (("uid", "''"), ("field_times", "'{}'")):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE clients ADD COLUMN {col} TEXT DEFAULT {default}")
+            doc_cols = {r[1] for r in c.execute("PRAGMA table_info(client_documents)")}
+            if "file_hash" not in doc_cols:
+                c.execute("ALTER TABLE client_documents ADD COLUMN file_hash TEXT DEFAULT ''")
             if not c.execute("SELECT 1 FROM doc_rules LIMIT 1").fetchone():
                 c.executemany(
                     "INSERT INTO doc_rules(code, doc_name, filename_patterns, ocr_keywords, sort_order,"
@@ -253,7 +283,11 @@ class Database:
         created_at = fields.pop("created_at", None)
         if created_at:
             fields["created_at"] = created_at
-        keys = [k for k in fields if k in CLIENT_FIELDS or k == "created_at"]
+        if "field_times" not in fields:  # новый клиент: все заданные поля — изменения этого компьютера
+            stamp = [utc_now(), self.computer]
+            fields["field_times"] = json.dumps({k: stamp for k in list(fields) + ["batch_period", "warnings"]
+                                                if k in SYNC_FIELDS}, ensure_ascii=False)
+        keys = [k for k in fields if k in CLIENT_FIELDS or k in ("created_at", "uid", "field_times")]
         with self.conn() as c:
             cur = c.execute(
                 f"INSERT INTO clients(batch_period, warnings{''.join(', ' + k for k in keys)})"
@@ -266,8 +300,22 @@ class Database:
         with self.conn() as c:
             c.execute("UPDATE clients SET batch_period=?, folder_path=?, master_pdf=? WHERE id=?",
                       (period, folder_path, master_pdf, client_id))
+        self._stamp(client_id, {"batch_period": None})
 
-    def update_client(self, client_id: int, **fields):
+    def _stamp(self, client_id: int, changed: dict):
+        """Отметить время изменения полей ({поле: [время, компьютер] или None — сейчас, этот компьютер})."""
+        with self.conn() as c:
+            row = c.execute("SELECT field_times FROM clients WHERE id=?", (client_id,)).fetchone()
+            if not row:
+                return
+            times = json.loads(row["field_times"] or "{}")
+            for k, t in changed.items():
+                times[k] = t or [utc_now(), self.computer]
+            c.execute("UPDATE clients SET field_times=? WHERE id=?", (json.dumps(times, ensure_ascii=False), client_id))
+
+    def update_client(self, client_id: int, _times: Optional[dict] = None, **fields):
+        """_times — время изменений с другого компьютера (синхронизация); иначе отмечается «сейчас»."""
+        before = self.client(client_id) if any(k in SYNC_FIELDS for k in fields) else None
         sets, values = [], []
         for k, v in fields.items():
             if k == "warnings":
@@ -279,9 +327,17 @@ class Database:
         if sets:
             with self.conn() as c:
                 c.execute(f"UPDATE clients SET {', '.join(sets)} WHERE id=?", (*values, client_id))
+        if before is not None:
+            changed = {k: (_times or {}).get(k) for k, v in fields.items()
+                       if k in SYNC_FIELDS and getattr(before, k, None) != v}
+            if changed:
+                self._stamp(client_id, changed)
 
     def delete_client(self, client_id: int):
         with self.conn() as c:
+            row = c.execute("SELECT uid FROM clients WHERE id=?", (client_id,)).fetchone()
+            if row and row["uid"]:  # удален здесь — синхронизация не вернет его обратно (у других он остается)
+                c.execute("INSERT OR IGNORE INTO sync_ignored(uid, doc_hash) VALUES (?, '')", (row["uid"],))
             c.execute("DELETE FROM clients WHERE id=?", (client_id,))
 
     # ------------------------------------------------------------ документы
@@ -292,13 +348,15 @@ class Database:
             return [Document(**dict(r)) for r in rows]
 
     def add_document(self, client_id: int, doc_type: str, file_path, original_name: str = "",
-                     is_processed_scan: int = 0, password_status: str = "", detected_by: str = "") -> int:
+                     is_processed_scan: int = 0, password_status: str = "", detected_by: str = "",
+                     added_at: Optional[str] = None) -> int:
         with self.conn() as c:
             cur = c.execute(
                 "INSERT INTO client_documents(client_id, doc_type, file_path, original_name,"
-                " is_processed_scan, password_status, detected_by) VALUES (?,?,?,?,?,?,?)",
+                " is_processed_scan, password_status, detected_by, added_at)"
+                " VALUES (?,?,?,?,?,?,?,COALESCE(?, CURRENT_TIMESTAMP))",
                 (client_id, doc_type, str(file_path), original_name, is_processed_scan,
-                 password_status, detected_by))
+                 password_status, detected_by, added_at))
             return cur.lastrowid
 
     def update_document(self, doc_id: int, **fields):
@@ -311,7 +369,41 @@ class Database:
 
     def delete_document(self, doc_id: int):
         with self.conn() as c:
+            row = c.execute("SELECT d.file_hash, c.uid FROM client_documents d JOIN clients c ON c.id=d.client_id"
+                            " WHERE d.id=?", (doc_id,)).fetchone()
+            if row and row["uid"] and row["file_hash"]:  # убран здесь — синхронизация его не вернет
+                c.execute("INSERT OR IGNORE INTO sync_ignored(uid, doc_hash) VALUES (?, ?)",
+                          (row["uid"], row["file_hash"]))
             c.execute("DELETE FROM client_documents WHERE id=?", (doc_id,))
+
+    # ------------------------------------------------------------ синхронизация
+
+    def set_uid(self, client_id: int, uid: str):
+        with self.conn() as c:
+            c.execute("UPDATE clients SET uid=? WHERE id=?", (uid, client_id))
+
+    def set_doc_hash(self, doc_id: int, digest: str):
+        with self.conn() as c:
+            c.execute("UPDATE client_documents SET file_hash=? WHERE id=?", (digest, doc_id))
+
+    def client_by_uid(self, uid: str) -> Optional[Client]:
+        with self.conn() as c:
+            row = c.execute("SELECT * FROM clients WHERE uid=?", (uid,)).fetchone()
+            return self._client(row) if row else None
+
+    def ignored(self) -> set:
+        """{(uid, doc_hash)} удаленного на этом компьютере."""
+        with self.conn() as c:
+            return {(r[0], r[1]) for r in c.execute("SELECT uid, doc_hash FROM sync_ignored")}
+
+    def meta(self, key: str, default: str = "") -> str:
+        with self.conn() as c:
+            row = c.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+            return row[0] if row else default
+
+    def set_meta(self, key: str, value: str):
+        with self.conn() as c:
+            c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", (key, value))
 
     def documents_of_type(self, client_id: int, doc_type: str) -> List[Document]:
         return [d for d in self.documents(client_id) if d.doc_type == doc_type]

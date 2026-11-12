@@ -5,6 +5,7 @@
 """
 
 import hashlib
+import json
 import re
 import shutil
 import sqlite3
@@ -355,6 +356,10 @@ def name_words(db=None, store: Optional[TrainingStore] = None) -> Set[str]:
         pass
     if db is not None:
         names += [c.full_name for c in db.all_clients() if c.full_name]
+    try:  # словарь, пришедший синхронизацией с компьютера, где обучают модель
+        names += json.loads((training_dir() / "synced_names.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
     for n in names:
         words |= {w for w in re.findall(r"[A-Z][A-Z'\-]+", n.upper()) if len(w) >= 3}
     return words

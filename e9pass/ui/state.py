@@ -30,6 +30,33 @@ def set_inbox_folder(path: str):
     QSettings("E9pay", "E9pay").setValue("inbox_folder", path)
 
 
+def _settings():
+    from PySide6.QtCore import QSettings
+    return QSettings("E9pay", "E9pay")
+
+
+def sync_folder() -> str:
+    """Общая папка на сервере для синхронизации между компьютерами ('' — синхронизация выключена)."""
+    return _settings().value("sync_folder", "", type=str)
+
+
+def sync_auto() -> bool:
+    return _settings().value("sync_auto", True, type=bool)
+
+
+def computer_label() -> str:
+    return _settings().value("computer_name", "", type=str)
+
+
+def save_sync_settings(folder: str, name: str, auto: bool):
+    from .. import config
+    s = _settings()
+    s.setValue("sync_folder", folder)
+    s.setValue("computer_name", name)
+    s.setValue("sync_auto", auto)
+    config.set_computer_name(name)
+
+
 class AppState(QObject):
     period_changed = Signal(str)
     data_changed = Signal()                # клиенты/документы изменились
@@ -37,6 +64,8 @@ class AppState(QObject):
     navigate = Signal(str)                 # имя экрана
     archives_dropped = Signal(list)        # новые архивы на приемку
     busy_changed = Signal(str)             # текст статуса фоновой работы ('' — свободно)
+    sync_requested = Signal(bool)          # «Обновить»: True — вручную (с итогом), False — авто
+    sync_status = Signal(str)              # строка состояния синхронизации
 
     def __init__(self, db: Database):
         super().__init__()

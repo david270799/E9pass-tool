@@ -26,7 +26,7 @@ def local_date(utc_text: str, with_time: bool = False) -> str:
 
 
 class ClientCard(QFrame):
-    def __init__(self, state, client, docs, rule_names, selected=False, on_select=None, copies=()):
+    def __init__(self, state, client, docs, rule_names, selected=False, on_select=None, copies=(), where=None):
         super().__init__()
         self.state, self.client_id = state, client.id
         self.setProperty("card", True)
@@ -50,7 +50,13 @@ class ClientCard(QFrame):
         warn_icon.setCursor(Qt.WhatsThisCursor)
         warn_icon.setToolTip("Проверьте:\n• " + "\n• ".join(client.warnings) if client.warnings else "")
         warn_icon.setVisible(bool(client.warnings))
-        top = hbox(self.check, name, None, warn_icon, StageButton(client.stage, self.set_stage), rm, spacing=8)
+        # синхронизация: 🌐 — клиент есть на всех компьютерах, 🖥 — только на этом
+        sync_icon = QLabel("🌐" if where and where[0] == "all" else "🖥")
+        sync_icon.setStyleSheet("font-size:15px;")
+        sync_icon.setToolTip(where[1] if where else "")
+        sync_icon.setVisible(where is not None)
+        top = hbox(self.check, sync_icon, name, None, warn_icon, StageButton(client.stage, self.set_stage), rm,
+                   spacing=8)
         arc = label(client.arc_number or "—", mono=True)
         arc.setMinimumWidth(arc.sizeHint().width())  # номер ARC всегда целиком
         # гражданство и дату рождения на карточке не показываем — дата видна по номеру ARC
@@ -134,6 +140,11 @@ class DashboardPage(QWidget):
         self.search.setPlaceholderText("Поиск по ФИО или ARC")
         self.search.setFixedWidth(240)
         self.search.textChanged.connect(self.refresh)
+        self.sync_b = button("⟳ Обновить", on_click=lambda: self.state.sync_requested.emit(True))
+        self.sync_b.setToolTip("Синхронизировать с другими компьютерами через общую папку (Настройки)")
+        self.sync_label = label("", dim=True)
+        self.sync_label.setMinimumWidth(10)  # длинный итог не раздвигает шапку (полный текст — в подсказке)
+        state.sync_status.connect(lambda t: (self.sync_label.setText(t), self.sync_label.setToolTip(t)))
         self.export_b = export_b = button("Экспорт реестра", primary=True, on_click=self.export_registry)
         export_b.setToolTip("Excel: ФИО, ARC, дата рождения, гражданство, адрес, телефон, e-mail (без банка).\n"
                             "Только отмеченные галочкой клиенты; если не отмечен никто — все клиенты месяца.\n"
@@ -220,7 +231,9 @@ class DashboardPage(QWidget):
         # передача коллеге — внизу: строка фильтров с этапами иначе не помещается
         footer = hbox(self.btn_send, self.btn_receive, None, zip_all)
 
-        root = vbox(hbox(switcher, self.month_label, None, self.search, new_b, import_b, export_b, spacing=14),
+        # строка синхронизации — под названием месяца, чтобы шапка не стала шире
+        root = vbox(hbox(switcher, vbox(self.month_label, self.sync_label, spacing=0), None, self.sync_b, self.search,
+                         new_b, import_b, export_b, spacing=14),
                     tiles, self.import_bar, filters, self.empty, scroll, footer,
                     spacing=16, margins=(32, 24, 32, 20))
         self.setLayout(root)
@@ -295,6 +308,18 @@ class DashboardPage(QWidget):
         from .state import shift_period
         self.state.set_period(shift_period(self.state.period, months))
 
+    @staticmethod
+    def _where(c, presence, pcs):
+        """Значок синхронизации: ('all' | 'local', подсказка) или None, если синхронизация выключена."""
+        if not pcs:
+            return None
+        has = presence.get(c.uid, []) if c.uid else []
+        if len(pcs) > 1 and set(pcs) <= set(has):
+            return "all", "Есть у всех: " + ", ".join(sorted(has))
+        if not has:
+            return "local", "Только у тебя — появится у других после «Обновить»"
+        return "local", "Только у тебя (у других удален или еще не получен) · есть на: " + ", ".join(sorted(has))
+
     def _set_filter(self, key):
         self.filter = key
         self.refresh()
@@ -328,6 +353,14 @@ class DashboardPage(QWidget):
             shown = [c for c in shown if q in c.full_name.lower() or q in c.arc_number]
         clear_layout(self.grid)
         names = db.rule_names()
+        from .. import sync
+        from .state import sync_folder
+        syncing_on = bool(sync_folder())
+        presence, pcs = (sync.presence(db), sync.computers(db)) if syncing_on else ({}, [])
+        self.sync_b.setVisible(syncing_on)
+        if syncing_on and not self.sync_label.text():
+            last = db.meta("sync_last_local", "")
+            self.sync_label.setText(f"🌐 синхронизировано {last}" if last else "еще не синхронизировано")
         arc_periods = {}
         for x in db.all_clients():
             digits = re.sub(r"\D", "", x.arc_number or "")
@@ -336,7 +369,7 @@ class DashboardPage(QWidget):
         for i, c in enumerate(shown):
             copies = sorted(arc_periods.get(re.sub(r"\D", "", c.arc_number or ""), set()) - {p})
             self.grid.addWidget(ClientCard(self.state, c, db.documents(c.id), names, c.id in self.selected,
-                                           self._toggle, copies), i // 3, i % 3)
+                                           self._toggle, copies, self._where(c, presence, pcs)), i // 3, i % 3)
         for col in range(3):
             self.grid.setColumnStretch(col, 1)
         self.empty.setVisible(not clients)

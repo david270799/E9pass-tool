@@ -130,6 +130,51 @@ class MainWindow(QMainWindow):
         self.calendar_timer.timeout.connect(self.state.follow_calendar)
         self.calendar_timer.start(60_000)
         self.set_sidebar_collapsed(self.settings.value("sidebar_collapsed", False, type=bool))
+        # синхронизация с другими компьютерами: при запуске, по кнопке «Обновить» и каждые 30 минут
+        self.syncing = False
+        self.state.sync_requested.connect(self.run_sync)
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(lambda: self.run_sync(False))
+        self.sync_timer.start(30 * 60_000)
+        QTimer.singleShot(4000, lambda: self.run_sync(False))
+
+    def run_sync(self, manual: bool):
+        from pathlib import Path
+
+        from PySide6.QtWidgets import QMessageBox
+
+        from .. import sync
+        from .state import sync_auto, sync_folder
+        from .widgets import run_task
+        folder = sync_folder()
+        if self.syncing or (not manual and (not folder or not sync_auto())):
+            return
+        if not folder:
+            if QMessageBox.question(self, "Синхронизация", "Общая папка для синхронизации не выбрана.\n"
+                                    "Открыть Настройки?") == QMessageBox.Yes:
+                self.show_page("doctypes")
+            return
+        self.syncing = True
+        self.state.sync_status.emit("⟳ синхронизация…")
+
+        def done(res):
+            self.syncing = False
+            from datetime import datetime
+            self.state.sync_status.emit(f"🌐 синхронизировано в {datetime.now():%H:%M} · {res.summary()}")
+            self.state.busy_changed.emit("")
+            self.state.data_changed.emit()
+            if manual or res.conflicts or res.errors:
+                show_sync_result(self, res)
+
+        def failed(err):
+            self.syncing = False
+            self.state.sync_status.emit("⚠ синхронизация не удалась — " + err.splitlines()[0][:80])
+            self.state.busy_changed.emit("")
+            if manual:
+                QMessageBox.warning(self, "Синхронизация", err)
+
+        run_task(sync.synchronize, self.state.db, Path(folder), on_done=done, on_fail=failed,
+                 on_progress=self.state.busy_changed.emit)
 
     def closeEvent(self, e):
         if self.client_data is not None:  # окно данных и значок закрываются вместе с программой
@@ -297,6 +342,9 @@ def main():
         logging.getLogger("e9pay").info("E9pay уже открыта — показываю ее окно")
         return 0
     app.setStyleSheet(theme.QSS)
+    from .. import config
+    from .state import computer_label
+    config.set_computer_name(computer_label())  # имя компьютера для синхронизации — до открытия базы
     db = Database()
     win = MainWindow(db)
     win.setWindowFlags(Qt.Window | Qt.WindowTitleHint | Qt.WindowSystemMenuHint
@@ -316,3 +364,22 @@ def main():
     from .extension_dialog import temp_number
     win.bridge_port = browser_bridge.start(db, get_period=lambda: win.state.period, get_temp=temp_number)
     sys.exit(app.exec())
+
+
+def show_sync_result(parent, res):
+    """Итог синхронизации: что отправлено и получено, конфликты и ошибки."""
+    from PySide6.QtWidgets import QMessageBox
+
+    lines = [f"⬆ Отправлено клиентов: {res.sent_clients}, файлов: {res.sent_files}",
+             f"⬇ Получено: новых клиентов {len(res.new_clients)}, изменено {len(res.updated_clients)}, "
+             f"файлов {res.received_files}"]
+    if res.models:
+        lines.append("🧠 Новая модель OCR: " + ", ".join(res.models))
+    if res.computers:
+        lines.append("Компьютеры в общей папке: " + ", ".join(sorted(res.computers)))
+    if res.conflicts:
+        lines.append("\n⚠ Изменено на обоих компьютерах — осталось более позднее:\n• " + "\n• ".join(res.conflicts[:15]))
+    if res.errors:
+        lines.append("\n⚠ Не удалось:\n• " + "\n• ".join(res.errors[:10]))
+    lines.append("\nУдаления не передаются: удаленное у тебя у других остается.")
+    QMessageBox.information(parent, "Синхронизация", "\n".join(lines))

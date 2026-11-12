@@ -469,7 +469,9 @@ def install(key: str, onnx_path: Path, before: float, after: float):
         shutil.copy2(dst, active_dir() / f"{key}.prev.onnx")
     shutil.copy2(onnx_path, dst)
     h = history()
-    h[key] = {"date": datetime.now().isoformat(timespec="minutes"), "before": before, "after": after}
+    from . import config
+    h[key] = {"date": datetime.now().isoformat(timespec="seconds"), "before": before, "after": after,
+              "computer": config.computer_name()}  # синхронизация передаст модель на другие компьютеры
     (active_dir() / "history.json").write_text(json.dumps(h, ensure_ascii=False, indent=1), encoding="utf-8")
     _reset_engine()
 
